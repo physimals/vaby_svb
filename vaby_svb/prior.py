@@ -86,7 +86,7 @@ class Prior(LogBase):
             #    self.vol_laplacian = scipy_to_tf_sparse(lap[1])
             #else: 
             self.laplacian = scipy_to_tf_sparse(lap[0])
-
+        
     @property
     def is_gaussian(self):
         return isinstance(self, NormalPrior)
@@ -136,6 +136,7 @@ class NormalPrior(Prior):
         self.mean = tf.fill([self.size], mean, name="%s_mean" % self.name)
         self.var = tf.fill([self.size], var, name="%s_var" % self.name)
         self.std = tf.sqrt(self.var, name="%s_std" % self.name)
+        self.vars = []
 
     def mean_log_pdf(self, samples):
         """
@@ -267,8 +268,10 @@ class MRFSpatialPrior(Prior):
             #    ]
             #else:
             self.logak = tf.Variable(np.log(ak_init), name="log_ak", dtype=TF_DTYPE)
+            self.vars = [self.logak]
         else:
             self.logak = tf.constant(np.log(ak_init), name="log_ak", dtype=TF_DTYPE)
+            self.vars = []
 
     def build(self):
         # Convert from log space to real number space 
@@ -342,7 +345,8 @@ class ARDPrior(NormalPrior):
         
         # Set up inferred precision parameter phi
         self.logphi = tf.Variable(tf.math.log(1/self.fixed_var), name="log_phi", dtype=TF_DTYPE)
-        
+        self.vars = [self.logphi]
+
     def build(self):
         self.phi = tf.exp(self.logphi)
         self.var = 1/self.phi
@@ -377,6 +381,7 @@ class MRF2SpatialPrior(Prior):
         # Set up spatial smoothing parameter calculation from posterior and neighbour lists
         self.logak = tf.Variable(-5.0, name="log_ak", dtype=TF_DTYPE)
         self.ak = tf.exp(self.logak)
+        self.vars = [self.logak]
 
     def mean_log_pdf(self, samples):
         samples = tf.reshape(samples, (self.size, -1)) # [W, N]
@@ -420,6 +425,7 @@ class ConstantMRFSpatialPrior(NormalPrior):
         # will be calculated from these and also the spatial variation in neighbour nodes
         self.fixed_mean = self.mean
         self.fixed_var = self.var
+        self.vars = []
 
     def __str__(self):
         return "Spatial MRF prior (%f, %f) - const" % (self.scalar_mean, self.scalar_var)
@@ -478,6 +484,7 @@ class FactorisedPrior(Prior):
         self.priors = priors
         self.name = kwargs.get("name", "FactPrior")
         self.nparams = len(priors)
+        self.vars = sum([p.vars for p in priors], [])
 
     def build(self):
         for prior in self.priors:

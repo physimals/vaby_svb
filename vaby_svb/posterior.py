@@ -170,6 +170,7 @@ class NormalPosterior(Posterior):
 
         self.mean_variable = tf.Variable(mean, validate_shape=False)
         self.log_var = tf.Variable(tf.math.log(var), validate_shape=False)
+        self.vars = [self.mean_variable, self.log_var]
 
     def build(self):
         self.var_variable = tf.exp(self.log_var)
@@ -231,6 +232,7 @@ class GaussianGlobalPosterior(Posterior):
                                          name="%s_mean" % self.name)
         self.log_var = tf.Variable(tf.math.log(tf.cast(self.initial_var_global, TF_DTYPE)), validate_shape=False,
                                    name="%s_log_var" % self.name)
+        self.vars = [self.mean_variable, self.log_var]
 
     def build(self):
         self.var_variable = tf.exp(self.log_var)
@@ -286,6 +288,7 @@ class FactorisedPosterior(Posterior):
         # need this for a diagonal covariance matrix but it is useful for
         # the full MVN covariance which shares some of the calculations
         self.cov_reg = 1e-5*tf.eye(self.nparams)
+        self.vars = sum([p.vars for p in posts], [])
 
     def build(self):
         for post in self.posts:
@@ -378,6 +381,8 @@ class MVNPosterior(FactorisedPosterior):
             covar_init = tf.zeros([self.nnodes, self.nparams, self.nparams], dtype=TF_DTYPE)
 
         self.off_diag_vars_base = tf.Variable(covar_init, validate_shape=False)
+        self.vars = sum([p.vars for p in posts], [])
+        self.vars.append(self.off_diag_vars_base)
 
     def build(self):
         FactorisedPosterior.build(self)

@@ -371,10 +371,10 @@ class Svb(LogBase):
         # the data and the model predictions. Calculation of the log-likelihood requires 
         # the properties of the noise distribution, which we get from the noise paramter
         # samples. Finally, we average this over voxels. 
-        reconstr_loss = self.noise_param.log_likelihood(data, 
+        reconst_loss = self.noise_param.log_likelihood(data, 
                             model_prediction_voxels, noise_samples_ext, self.data_model.n_tpts)
-        self.reconstr_loss = reconstr_loss
-        self.mean_reconstr_cost = tf.reduce_mean(self.reconstr_loss, name="mean_reconstr_cost")
+        self.reconst_loss = reconst_loss
+        self.mean_reconst_cost = tf.reduce_mean(self.reconst_loss, name="mean_reconst_cost")
 
         # Part 2: Latent loss
         #
@@ -423,35 +423,18 @@ class Svb(LogBase):
             self.mean_cost = self.mean_latent_loss
         elif self.reconstruction_only: 
             self.log.info("Debug: reconstruction cost only")
-            self.mean_cost = self.mean_reconstr_cost
+            self.mean_cost = self.mean_reconst_cost
         else: 
-            self.mean_cost = tf.add(self.mean_reconstr_cost, self.mean_latent_loss)
+            self.mean_cost = tf.add(self.mean_reconst_cost, self.mean_latent_loss)
 
         return self.mean_cost
     
-    def _optimize(self):
-        # Set up ADAM to optimise over mean cost as defined above. 
-        # It is also possible to optimize the total cost but this makes it harder to compare with
-        # variable numbers of voxels
-        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-        self.optimize = self.optimizer.minimize(self.mean_cost, global_step=self.global_step)
-
     def cost(self, data, tpts, sample_size):
         self.prior.build()
         self.post.build()
         self.noise_prior.build()
         self.noise_post.build()
         return self._cost(data, tpts, sample_size)
-
-    def fit_batch(self):
-        """
-        Train model based on mini-batch of input data.
-
-        :return: Tuple of (param_latent, noise_latent, reconstruction) losses for batch
-        """
-        _, param_latent, noise_latent, reconstr = self.evaluate(self.optimize, 
-                    self.param_latent_loss, self.noise_latent_loss, self.reconstr_loss)
-        return param_latent, noise_latent, reconstr
 
     def state(self):
         """
@@ -492,7 +475,7 @@ class Svb(LogBase):
 
         
     def train(self, batch_size=None, sequential_batches=False,
-              epochs=100, fit_only_epochs=0, display_step=10,
+              epochs=100, fit_only_epochs=0, display_step=1,
               learning_rate=0.1, lr_decay_rate=1.0,
               sample_size=None, ss_increase_factor=1.0,
               revert_post_trials=50, revert_post_final=True,
@@ -583,22 +566,22 @@ class Svb(LogBase):
                                   self.noise_var.numpy()]).T
 
         initial_latent = np.mean(self.param_latent_loss.numpy()) + np.mean(self.noise_latent_loss.numpy())
-        initial_reconstr = np.mean(self.reconstr_loss.numpy())
+        initial_reconst = np.mean(self.reconst_loss.numpy())
         start_time = time.time()
 
-        state_str = (" - Start 0000: Means: %s, Variances: %s, mean cost %.4g (latent %.4g, reconstr %.4g)" 
-                        % (initial_param_means, initial_param_vars, initial_cost, initial_latent, initial_reconstr))
+        state_str = (" - Start 0000: Means: %s, Variances: %s, mean cost %.4g (latent %.4g, reconst %.4g)" 
+                        % (initial_param_means, initial_param_vars, initial_cost, initial_latent, initial_reconst))
         self.log.info(state_str)
 
-        return
         # Potential for a bug here: don't use range(1, epochs+1) as it 
         # interacts badly with training the ak parameter. 
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         for epoch in range(epochs):
             try:
                 err = False
                 total_param_latent = np.zeros([n_nodes])
                 total_noise_latent = np.zeros([n_voxels])
-                total_reconstr = np.zeros([n_voxels])
+                total_reconst = np.zeros([n_voxels])
 
                 if epoch == fit_only_epochs:
                     # Once we have completed fit_only_epochs of training we will allow the latent cost to have
@@ -625,42 +608,45 @@ class Svb(LogBase):
                         batch_tpts = self.tpts[:, i::n_batches]
 
                     # Perform a training iteration using batch data
-                    self.feed_dict.update({
-                        self.data_train: batch_data,
-                        self.tpts_train : batch_tpts,
-                        self.latent_weight : latent_weight,
-                    })
-                    param_latent, noise_latent, reconstruction = self.fit_batch()
-                    total_param_latent += param_latent / n_batches
-                    total_noise_latent += noise_latent / n_batches 
-                    total_reconstr += reconstruction / n_batches
+                    all_vars = self.post.vars + self.prior.vars + self.noise_post.vars + self.noise_prior.vars
+                    with tf.GradientTape(persistent=False) as t:
+                        ecost = self.cost(batch_data, batch_tpts, sample_size)
+                    gradients = t.gradient(ecost, all_vars)
+                    
 
-            except tf.OpError:
+                    # Apply the gradients
+                    optimizer.apply_gradients(zip(gradients, all_vars))
+
+                    total_param_latent += self.param_latent_loss.numpy() / n_batches
+                    total_noise_latent += self.noise_latent_loss.numpy() / n_batches 
+                    total_reconst += self.reconst_loss.numpy() / n_batches
+
+            except tf.errors.OpError:
                 self.log.exception("Numerical error fitting batch")
                 err = True
 
             # End of epoch
             # Extract model parameter estimates
-            current_lr, current_ss = self.evaluate(self.learning_rate, self.sample_size)
-            param_means = self.evaluate(self.model_means).T # [W, P]
-            param_vars = self.evaluate(self.post.var) # [W, P]
+            current_lr, current_ss = learning_rate, sample_size
+            param_means = self.model_means.numpy().T # [W, P]
+            param_vars = self.post.var.numpy() # [W, P]
 
             # Extract noise parameter estimates. 
             # The noise_mean is actually the 'best' estimate of noise variance, 
             # whereas noise_var is the variance of the noise vairance - yes, confusing!
             # We generally only care about the former 
-            noise_params = np.array([ self.evaluate(self.noise_mean), 
-                                      self.evaluate(self.noise_var) ]).T
+            noise_params = np.array([ self.noise_mean.numpy(), 
+                                      self.noise_var.numpy() ]).T
             mean_noise_params = noise_params.mean(0)
 
             # Assembele total, mean and median costs. 
             # Note that param_latent is sized according to nodes, 
             # noise_latent is sized according to voxels, and these may be different
             mean_total_latent = total_param_latent.mean() + total_noise_latent.mean()
-            mean_total_reconst = total_reconstr.mean()
+            mean_total_reconst = total_reconst.mean()
             mean_total_cost = mean_total_latent + mean_total_reconst
             median_total_latent = np.median(total_param_latent) + np.median(total_noise_latent)
-            median_total_reconst = np.median(total_reconstr)
+            median_total_reconst = np.median(total_reconst)
             median_total_cost = median_total_latent + median_total_reconst # approx
             
             # Store costs (all are over batches of this epoch): 
@@ -669,7 +655,7 @@ class Svb(LogBase):
             # parameter latent cost over nodes 
             # noise latent cost over voxels 
             training_history["mean_cost"][epoch] = mean_total_cost
-            training_history["reconstruction_cost"][:, epoch] = total_reconstr
+            training_history["reconstruction_cost"][:, epoch] = total_reconst
             training_history["param_latent_loss"][:, epoch] = total_param_latent
             training_history["noise_latent_loss"][:, epoch] = total_noise_latent
 
@@ -687,14 +673,14 @@ class Svb(LogBase):
 
             if err or np.isnan(mean_total_cost) or np.isnan(param_means).any():
                 # Numerical errors while processing this epoch. Revert to best saved params if possible
-                if best_state is not None:
-                    self.set_state(best_state)
+                #if best_state is not None:
+                #    self.set_state(best_state)
                 outcome = "Revert - Numerical errors"
             elif mean_total_cost < best_cost:
                 # There was an improvement in the mean cost - save the current state of the posterior
                 outcome = "Saving"
                 best_cost = mean_total_cost
-                best_state = self.state()
+                #best_state = self.state()
                 trials = 0
             else:
                 # The mean cost did not improve. 
@@ -704,7 +690,7 @@ class Svb(LogBase):
                     if trials < revert_post_trials:
                         outcome = "Trial %i" % trials
                     elif best_state is not None:
-                        self.set_state(best_state)
+                        #self.set_state(best_state)
                         outcome = "Revert"
                         trials = 0
                     else:
@@ -713,34 +699,37 @@ class Svb(LogBase):
                 else:
                     outcome = "Not saving"
 
-            if (epoch % display_step == 0) and (epoch > 0):
-                first_line = (("mean/median cost %.4g/%.4g, (latent %.4g, reconstr %.4g)") 
-                                % (mean_total_cost, median_total_cost, mean_total_latent,
-                                    mean_total_reconst))
+            if (epoch % display_step == 0):
+                #first_line = (("mean/median cost %.4g/%.4g, (latent %.4g, reconst %.4g)") 
+                #                % (mean_total_cost, median_total_cost, mean_total_latent,
+                #                    mean_total_reconst))
 
-                space_strings = []
-                with np.printoptions(precision=3):
-                    if vol_inds is not None: 
-                        vmean = param_means[vol_inds,:].mean(0)
-                        vvar = param_vars[vol_inds,:].mean(0)
-                        space_strings.append(
-                            "Volume: param means %s, param vars %s, ak %s"
-                            % (vmean, vvar, vak))
-                    if surf_inds is not None: 
-                        smean = param_means[surf_inds,:].mean(0)
-                        svar = param_vars[surf_inds,:].mean(0)
-                        space_strings.append(
-                            "Surface: param means %s, param vars %s, ak %s" 
-                                            % (smean, svar, sak))
-                    if subcort_inds is not None: 
-                        submean = param_means[subcort_inds,:].mean(0)
-                        subvar = param_vars[subcort_inds,:].mean(0)
-                        space_strings.append("ROIs: param means %s, param vars %s" 
-                                            % (submean, subvar))
-                    end_str = ("Noise mean/var %s, lr %.4g, ss %.4g" 
-                                % (mean_noise_params, current_lr, current_ss))
-                state_str = ("\n"+10*" ").join((first_line, *space_strings, end_str))
-                self.log.info(" - Epoch %04d: %s - %s", epoch, state_str, outcome)
+                # space_strings = []
+                # with np.printoptions(precision=3):
+                #     if vol_inds is not None: 
+                #         vmean = param_means[vol_inds,:].mean(0)
+                #         vvar = param_vars[vol_inds,:].mean(0)
+                #         space_strings.append(
+                #             "Volume: param means %s, param vars %s, ak %s"
+                #             % (vmean, vvar, vak))
+                #     if surf_inds is not None: 
+                #         smean = param_means[surf_inds,:].mean(0)
+                #         svar = param_vars[surf_inds,:].mean(0)
+                #         space_strings.append(
+                #             "Surface: param means %s, param vars %s, ak %s" 
+                #                             % (smean, svar, sak))
+                #     if subcort_inds is not None: 
+                #         submean = param_means[subcort_inds,:].mean(0)
+                #         subvar = param_vars[subcort_inds,:].mean(0)
+                #         space_strings.append("ROIs: param means %s, param vars %s" 
+                #                             % (submean, subvar))
+                #     end_str = ("Noise mean/var %s, lr %.4g, ss %.4g" 
+                #                 % (mean_noise_params, current_lr, current_ss))
+                # state_str = ("\n"+10*" ").join((first_line, *space_strings, end_str))
+                state_str = (" - Epoch %04d: Means: %s, Variances: %s, mean cost %.4g (latent %.4g, reconst %.4g)" 
+                        % (epoch, param_means.mean(0), param_vars.mean(0), mean_total_cost, mean_total_latent, mean_total_reconst))
+        
+                self.log.info(state_str)
 
             epoch_end_time = time.time()
             training_history["runtime"][epoch] = float(epoch_end_time - start_time)
@@ -751,13 +740,13 @@ class Svb(LogBase):
             # with these values. Note that the cost may not be as reported earlier as this was based on a
             # mean over the training batches whereas here we recalculate the cost for the whole data set.
             self.log.info(" - Reverting to best batch-averaged cost")
-            self.set_state(best_state)
+            #self.set_state(best_state)
 
         self.feed_dict[self.data_train] = data
         self.feed_dict[self.tpts_train] = self.tpts
-        param_means = self.evaluate(self.model_means).T # [W, P]
-        noise_params = np.array([ self.evaluate(self.noise_mean), 
-                                  self.evaluate(self.noise_var) ]).T
+        param_means = self.model_means.numpy().T # [W, P]
+        noise_params = np.array([ self.noise_mean.numpy(), 
+                                  self.noise_var.numpy() ]).T
         mean_noise_params = noise_params.mean(0)
 
         with np.printoptions(precision=3):
