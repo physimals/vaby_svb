@@ -329,9 +329,9 @@ def run(data, model_name, output, mask=None, **kwargs):
         params = fwd_model.params
 
     # Prepare to write out results
-    means = svb.evaluate(svb.model_means)
-    variances = svb.evaluate(svb.model_vars)
-    noise = svb.evaluate(svb.noise_mean)
+    means = svb.model_means.numpy()
+    variances = svb.model_vars.numpy()
+    noise = svb.noise_mean.numpy()
 
     # Get the formats for output (can be multiple formats), sanity check. 
 
@@ -353,7 +353,7 @@ def run(data, model_name, output, mask=None, **kwargs):
     # name and whether data is volumetric or surface. The partial function
     # gifti_write is pre-configured to split the surface data across each 
     # hemisphere of the cortex, if two are present. 
-    #makepathbase = lambda s: os.path.join(output, s)
+    outfname = lambda f: os.path.join(output, f)
     #makevpath = lambda s: makepathbase(f"{s}.nii.gz")
     #makespath = lambda s,side: makepathbase(f"{s}_{side}_cortex.func.gii")
     #makecpath = lambda s: makepathbase(s)
@@ -366,104 +366,84 @@ def run(data, model_name, output, mask=None, **kwargs):
         # Mean parameter values 
         if kwargs.get("save_mean", True):
             mean = means[idx]
-            name = f"mean_{param.name}"
-            if 'nii' in outformat: 
-                p = makevpath(name)
-                data_model.nifti_image(mean[vslice]).to_filename(p)
-            if 'gii' in outformat:
-                gifti_writer(mean[sslice], name)
-            if 'cii' in outformat: 
-                np.savez_compressed(makecpath(name), mean)
+            name = outfname(f"mean_{param.name}.nii.gz")
+            data_model.nifti_image(mean).to_filename(name)
 
         # Variances   
         if kwargs.get("save_var", False):
             var = variances[idx]
-            name = f"var_{param.name}"
-            if 'nii' in outformat: 
-                p = makevpath(name)
-                data_model.nifti_image(var[vslice]).to_filename(p)
-            if 'gii' in outformat:
-                sdata = variances[idx][sslice]
-                gifti_writer(sdata, name)
-            if 'cii' in outformat: 
-                np.savez_compressed(makecpath(name), mean)
+            name = outfname(f"var_{param.name}.nii.gz")
+            data_model.nifti_image(var).to_filename(name)
 
         # Std deviations
         if kwargs.get("save_std", False):
             std = np.sqrt(variances[idx])
-            name = f"std_{param.name}"
-            if 'nii' in outformat: 
-                p = makevpath(name)
-                data_model.nifti_image(std[vslice]).to_filename(p)
-            if 'gii' in outformat:
-                gifti_writer(std[sslice], name)
-            if 'cii' in outformat: 
-                np.savez_compressed(makecpath(name), mean)
+            name = outfname(f"std_{param.name}.nii.gz")
+            data_model.nifti_image(std).to_filename(name)
 
     # Noise (volumetric only)
     if kwargs.get("save_noise", False):
-        p = makevpath("noise")
-        data_model.nifti_image(noise).to_filename(p)
+        name = outfname("noise_mean.nii.gz")
+        data_model.nifti_image(noise).to_filename(name)
 
     # Reconstruction cost (volumetric only)
-    recon = training_history["reconstruction_cost"]
-    latent = training_history["param_latent_loss"]
-    noise = training_history["noise_latent_loss"]
-    if kwargs.get("save_cost", False):
-        data_model.nifti_image(recon[...,-1]).to_filename(makevpath("reconstruction_cost"))
-        data_model.nifti_image(noise[...,-1]).to_filename(makevpath("noise_latent_cost"))
-        p = op.join(output, 'param_latent_cost.npz')
-        np.savez_compressed(p, latent[...,-1])
-    if kwargs.get("save_cost_history", False):
-        data_model.nifti_image(recon).to_filename(makevpath("reconstruction_history"))
-        data_model.nifti_image(noise).to_filename(makevpath("noise_latent_history"))
-        p = op.join(output, 'param_latent_history.npz')
-        np.savez_compressed(p, latent)
+    # recon = training_history["reconstruction_cost"]
+    # latent = training_history["param_latent_loss"]
+    # noise = training_history["noise_latent_loss"]
+    # if kwargs.get("save_cost", False):
+    #     data_model.nifti_image(recon[...,-1]).to_filename(makevpath("reconstruction_cost"))
+    #     data_model.nifti_image(noise[...,-1]).to_filename(makevpath("noise_latent_cost"))
+    #     p = op.join(output, 'param_latent_cost.npz')
+    #     np.savez_compressed(p, latent[...,-1])
+    # if kwargs.get("save_cost_history", False):
+    #     data_model.nifti_image(recon).to_filename(makevpath("reconstruction_history"))
+    #     data_model.nifti_image(noise).to_filename(makevpath("noise_latent_history"))
+    #     p = op.join(output, 'param_latent_history.npz')
+    #     np.savez_compressed(p, latent)
         
     # Node-wise parameter history 
-    if kwargs.get("save_param_history", False):
-        param_history = training_history["node_params"]
-        ak_history = training_history["ak"]
-        for idx, param in enumerate(params):
-            phist = param_history[...,idx]
-            name = f"mean_{param.name}_history"
-            if 'nii' in outformat: 
-                p = makevpath(name)
-                data_model.nifti_image(phist[vslice,:]).to_filename(p)
-                ak_name = op.join(output, f"ak_{param.name}_vol_history.txt")
-                np.savetxt(ak_name, ak_history["vol"][:,idx])
-            if 'gii' in outformat:
-                gifti_writer(phist[sslice,:], name)
-                ak_name = op.join(output, f"ak_{param.name}_surf_history.txt")
-                np.savetxt(ak_name, ak_history["surf"][:,idx])
+    # if kwargs.get("save_param_history", False):
+    #     param_history = training_history["node_params"]
+    #     ak_history = training_history["ak"]
+    #     for idx, param in enumerate(params):
+    #         phist = param_history[...,idx]
+    #         name = f"mean_{param.name}_history"
+    #         if 'nii' in outformat: 
+    #             p = makevpath(name)
+    #             data_model.nifti_image(phist[vslice,:]).to_filename(p)
+    #             ak_name = op.join(output, f"ak_{param.name}_vol_history.txt")
+    #             np.savetxt(ak_name, ak_history["vol"][:,idx])
+    #         if 'gii' in outformat:
+    #             gifti_writer(phist[sslice,:], name)
+    #             ak_name = op.join(output, f"ak_{param.name}_surf_history.txt")
+    #             np.savetxt(ak_name, ak_history["surf"][:,idx])
 
     # Model fit across all timepoints (note this can only be a nii volume)
     if kwargs.get("save_model_fit", False):
-        p = makevpath("modelfit")
+        name = outfname("modelfit.nii.gz")
         # FIXME: disabled 
         # data_model.nifti_image(svb.modelfit).to_filename(p)
 
     # Posterior (means and upper half of covariance matrix)
     # FIXME: surface is written out as a GIFTI series following the same 
     # convention as for volume. 
-    if kwargs.get("save_post", False):
-        name = "posterior.nii.gz"
-        if 'nii' in outformat: 
-            p = makevpath(name)
-            post_data = data_model.posterior_data(
-                svb.evaluate(svb.post.mean)[vslice,:], 
-                svb.evaluate(svb.post.cov)[vslice,:])
-            data_model.nifti_image(post_data).to_filename(p)
-            log.info("Volumetric posterior data shape: %s", post_data.shape)
-        if 'gii' in outformat:
-            post_data = data_model.posterior_data(
-                svb.evaluate(svb.post.mean)[sslice,:], 
-                svb.evaluate(svb.post.cov)[sslice,:])
-            gifti_writer(post_data, name)
-            log.info("Surface posterior data shape: %s", post_data.shape)
+    # if kwargs.get("save_post", False):
+    #     name = "posterior.nii.gz"
+    #     if 'nii' in outformat: 
+    #         p = makevpath(name)
+    #         post_data = data_model.posterior_data(
+    #             svb.evaluate(svb.post.mean)[vslice,:], 
+    #             svb.evaluate(svb.post.cov)[vslice,:])
+    #         data_model.nifti_image(post_data).to_filename(p)
+    #         log.info("Volumetric posterior data shape: %s", post_data.shape)
+    #     if 'gii' in outformat:
+    #         post_data = data_model.posterior_data(
+    #             svb.evaluate(svb.post.mean)[sslice,:], 
+    #             svb.evaluate(svb.post.cov)[sslice,:])
+    #         gifti_writer(post_data, name)
+    #         log.info("Surface posterior data shape: %s", post_data.shape)
 
     # Runtime (text files)
-    # FIXME: added .txt extensions
     if kwargs.get("save_runtime", False):
         with open(os.path.join(output, "runtime.txt"), "w") as runtime_f:
             runtime_f.write("%f\n" % runtime)
@@ -475,14 +455,14 @@ def run(data, model_name, output, mask=None, **kwargs):
 
     # Input data (volumetric only)
     if kwargs.get("save_input", False):
-        p = makevpath("input_data")
-        data_model.nifti_image(data_model.data_flattened).to_filename(p)
+        name = outfname("input_data.nii.gz")
+        data_model.nifti_image(data_model.data_flat).to_filename(name)
 
     # Projector, if it exists. 
     # FIXME: a nice thing to do for repeat runs? this way the user can re-use it if anything
     # goes wrong, but it would be nice to let them know this is default behaviour. 
-    if hasattr(data_model, "projector"):
-        data_model.projector.save(os.path.join(output, "projector.h5"))
+    #if hasattr(data_model, "projector"):
+    #    data_model.projector.save(os.path.join(output, "projector.h5"))
 
     log.info("Output written to: %s", output)
     return runtime, svb, training_history

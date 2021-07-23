@@ -742,31 +742,29 @@ class Svb(LogBase):
             self.log.info(" - Reverting to best batch-averaged cost")
             #self.set_state(best_state)
 
-        self.feed_dict[self.data_train] = data
-        self.feed_dict[self.tpts_train] = self.tpts
         param_means = self.model_means.numpy().T # [W, P]
         noise_params = np.array([ self.noise_mean.numpy(), 
                                   self.noise_var.numpy() ]).T
         mean_noise_params = noise_params.mean(0)
 
-        with np.printoptions(precision=3):
-            final_str = ["   Best batch-averaged cost: %.4g" % best_cost]
-            mean_str = []
-            if vol_inds is not None: 
-                mean_str.append("%s in volume" % param_means[vol_inds,:].mean(0))
-            if surf_inds is not None: 
-                mean_str.append("%s on surface" % param_means[surf_inds,:].mean(0))
-            if subcort_inds is not None: 
-                mean_str.append("%s in ROIs" % param_means[subcort_inds,:].mean(0))
-            final_str.append("Final parameter means: " + ", ".join(mean_str))
-            final_str.append("Final noise variance in volume: %.4g" % mean_noise_params[0])
+        # with np.printoptions(precision=3):
+        #     final_str = ["   Best batch-averaged cost: %.4g" % best_cost]
+        #     mean_str = []
+        #     if vol_inds is not None: 
+        #         mean_str.append("%s in volume" % param_means[vol_inds,:].mean(0))
+        #     if surf_inds is not None: 
+        #         mean_str.append("%s on surface" % param_means[surf_inds,:].mean(0))
+        #     if subcort_inds is not None: 
+        #         mean_str.append("%s in ROIs" % param_means[subcort_inds,:].mean(0))
+        #     final_str.append("Final parameter means: " + ", ".join(mean_str))
+        #     final_str.append("Final noise variance in volume: %.4g" % mean_noise_params[0])
 
-        self.log.info(("\n"+10*" ").join(final_str))
+        #self.log.info(("\n"+10*" ").join(final_str))
         training_history["mean_node_params"][-1, :] = param_means.mean(0)
         training_history["node_params"][:, -1, :] = param_means
         training_history["mean_noise_params"][-1] = mean_noise_params[0]
         training_history["noise_params"][:, -1] = noise_params[:,0]
-        sak, vak = self._extract_ak()
+        #sak, vak = self._extract_ak()
         if sak.size: training_history["ak"]["surf"][epoch,:] = sak 
         if vak.size: training_history["ak"]["vol"][epoch,:] = vak 
 
