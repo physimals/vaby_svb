@@ -87,9 +87,6 @@ KWARGS = {
     'packages' : find_packages(),
     'package_data' : {},
     'entry_points' : {
-        'console_scripts' : [
-            "vaby_svb=vaby_svb.main:main",
-        ],
     },
     'classifiers' : [
         'Intended Audience :: Science/Research',
