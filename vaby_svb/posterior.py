@@ -24,26 +24,26 @@ def get_posterior(idx, param, t, data_model, **kwargs):
     is_global = False # FIXME previously part of Parameter
     initial_mean, initial_var = None, None
     if param.post_init is not None:
-        initial_mean, initial_var = param.post_init(param, t, data_model.data_flat)
+        initial_mean, initial_var = param.post_init(param, t, data_model.data_space.srcdata.flat)
 
         # If parameter defined on surface, project the volume init values
         # onto the surface
         if ((isinstance(initial_mean, (np.ndarray, tf.Tensor))) 
                 and (tensor_array_shape(initial_mean, 0) 
-                    == data_model.n_voxels)):
-            initial_mean = tf.squeeze(data_model.voxels_to_nodes(
+                    == data_model.data_space.size)):
+            initial_mean = tf.squeeze(data_model.data_to_model(
                 tf.expand_dims(initial_mean, -1), False))
         if ((isinstance(initial_var, (np.ndarray, tf.Tensor))) 
                 and (tensor_array_shape(initial_var, 0) 
-                    == data_model.n_voxels)):
-            initial_var = tf.squeeze(data_model.voxels_to_nodes(
+                    == data_model.data_space.size)):
+            initial_var = tf.squeeze(data_model.data_to_model(
                 tf.expand_dims(initial_var, -1)))
 
     # The size of the posterior (number of positions at which it is 
     # estimated) is determined by the data_space it refers to, and 
     # in turn by the data model. If it is global, the reduction will
     # be applied when creating the GaussianGlobalPosterior later on 
-    post_size = data_model.n_nodes
+    post_size = data_model.model_space.size
 
     if initial_mean is None:
         initial_mean = tf.fill([post_size], param.post_dist.mean)

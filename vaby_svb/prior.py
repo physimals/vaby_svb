@@ -3,7 +3,7 @@ VABY_AVB - Definition of prior distribution
 """
 import numpy as np
 
-from toblerone.utils import is_symmetric, is_nsd
+#from toblerone.utils import is_symmetric, is_nsd
 import tensorflow as tf
 
 from vaby.utils import LogBase, TF_DTYPE, scipy_to_tf_sparse
@@ -52,40 +52,41 @@ class Prior(LogBase):
         super().__init__() 
         self.data_model = data_model
 
-        if data_model is not None: 
+        #if data_model is not None: 
             # TODO: currently this NN tensor is only required for the Fabber
             # priors (not the full SVB prior) - remove? This is also the only
             # reason we require the adj_matrix on the DataModel 
-            self.nn = tf.SparseTensor(
-                indices=np.array(
-                    [data_model.adj_matrix.row, 
-                    data_model.adj_matrix.col]).T,
-                values=data_model.adj_matrix.data, 
-                dense_shape=data_model.adj_matrix.shape, 
-            )
+            #self.nn = tf.SparseTensor(
+            #    indices=np.array(
+            #        [data_model.adj_matrix.row, 
+            #        data_model.adj_matrix.col]).T,
+            #    values=data_model.adj_matrix.data, 
+            #    dense_shape=data_model.adj_matrix.shape, 
+            #)
 
             # Vol and surface have a single laplcian, hybrid has 2 
             # (for surface and volume, listed in that order). Pad
             # the former case into a size-1 list 
             #if not data_model.is_hybrid: 
-            lap = [data_model.laplacian]
+            #lap = [data_model.laplacian]
             #else: 
             #    lap = data_model.laplacian 
 
             # Check sign convention on Laplacian
-            for l in lap: 
-                diags = l.tocsr()[np.diag_indices(l.shape[0])]
-                if (diags > 0).any():
-                    raise ValueError("Sign convention on Laplacian matrix: " +
-                    "diagonal elements should be negative, off-diag positive.")
-                assert is_nsd(l), 'Laplacian not NSD'
-                assert is_symmetric(l), 'Laplacian not symmetric'
+            #for l in lap: 
+            #    diags = l.tocsr()[np.diag_indices(l.shape[0])]
+            #    if (diags > 0).any():
+            #        raise ValueError("Sign convention on Laplacian matrix: " +
+            #        "diagonal elements should be negative, off-diag positive.")
+                # FIXME dependency on toblerone just for this?
+                #assert is_nsd(l), 'Laplacian not NSD'
+                #assert is_symmetric(l), 'Laplacian not symmetric'
 
             #if data_model.is_hybrid: 
             #    self.surf_laplacian = scipy_to_tf_sparse(lap[0])
             #    self.vol_laplacian = scipy_to_tf_sparse(lap[1])
             #else: 
-            self.laplacian = scipy_to_tf_sparse(lap[0])
+            #self.laplacian = scipy_to_tf_sparse(lap[0])
         
     @property
     def is_gaussian(self):
@@ -93,8 +94,8 @@ class Prior(LogBase):
 
     @property
     def size(self):
-        return self.data_model.n_nodes
-
+        return self.data_model.model_space.size
+        
     def build(self):
         """
         Define tensors that depend on any Variables in the prior
