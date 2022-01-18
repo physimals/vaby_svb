@@ -8,11 +8,9 @@ except ImportError:
     __timestamp__ = "Unknown timestamp"
 
 from .svb import Svb
-from .main import run
 
 __all__ = [
    "__version__",
     "__timestamp__",
     "Svb",
-    "run",
 ]
