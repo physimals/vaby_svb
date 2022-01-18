@@ -98,7 +98,7 @@ class Svb(InferenceMethod):
         display_step = kwargs.get("display_step", 10)
         lr_decay_rate = kwargs.get("lr_decay_rate", 1.0)
         ss_increase_factor = kwargs.get("ss_increase_factor", 1.0)
-        revert_post_trials = kwargs.get("revert_post_trials", 50)
+        self.revert_post_trials = kwargs.get("revert_post_trials", 50)
         revert_post_final = kwargs.get("revert_post_final", True)
         record_history = kwargs.get("record_history", False)
         self.history = {}
@@ -147,8 +147,8 @@ class Svb(InferenceMethod):
         self.log.info(" - Initial sample size: %i", sample_size)
         if ss_increase_factor > 1.0:
             self.log.info(" - Sample size increase factor: %.3f", ss_increase_factor)
-        if revert_post_trials > 0:
-            self.log.info(" - Posterior reversion after %i trials", revert_post_trials)
+        if self.revert_post_trials > 0:
+            self.log.info(" - Posterior reversion after %i trials", self.revert_post_trials)
 
         # Log initial state
         self.cost(self.data, self.tpts, sample_size)
