@@ -458,6 +458,7 @@ class Svb(InferenceMethod):
         # model_mean. This is distinct to producing a prediction for each samples. 
         self.model_mean = tf.identity(model_mean)
         self.model_var = tf.identity(model_var)
+        self.modelfit = self.fwd_model.evaluate(self.model_mean, tpts)
 
         return self.sample_predictions
 
@@ -505,12 +506,6 @@ class Svb(InferenceMethod):
         # the full data size. 
         model_prediction = self._get_model_prediction(param_samples_int, tpts)
         model_prediction_voxels = self.data_model.model_to_data(model_prediction)
-
-        # FIXME for some reason the below code to evaluate model fit returns 
-        # an error currently - related to while loops and sparse matrices
-        # param_means = tf.expand_dims(tf.transpose(self.model_mean), 2)
-        # modelfit_nodes = self._get_model_prediction(param_means)
-        # modelfit_voxels = self.data_model.model_to_data(modelfit_nodes[...,0])
 
         # Convert the noise samples from from internal to external representation.
         # Save the current moments of the noise posterior. 
