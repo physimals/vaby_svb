@@ -5,8 +5,8 @@ import tensorflow as tf
 
 import numpy as np
 
-from vaby.utils import LogBase, TF_DTYPE
-from vaby import dist
+from vaby.utils import LogBase, NP_DTYPE, TF_DTYPE
+import vaby.dist as dist
 
 def tensor_array_shape(obj, dim):
     if isinstance(obj, np.ndarray):
@@ -28,16 +28,16 @@ def get_posterior(idx, param, t, data_model, **kwargs):
 
         # If parameter defined on surface, project the volume init values
         # onto the surface
-        if ((isinstance(initial_mean, (np.ndarray, tf.Tensor))) 
-                and (tensor_array_shape(initial_mean, 0) 
-                    == data_model.data_space.size)):
-            initial_mean = tf.squeeze(data_model.data_to_model(
-                tf.expand_dims(initial_mean, -1), False))
-        if ((isinstance(initial_var, (np.ndarray, tf.Tensor))) 
-                and (tensor_array_shape(initial_var, 0) 
-                    == data_model.data_space.size)):
-            initial_var = tf.squeeze(data_model.data_to_model(
-                tf.expand_dims(initial_var, -1)))
+        #if ((isinstance(initial_mean, (np.ndarray, tf.Tensor))) 
+        #        and (tensor_array_shape(initial_mean, 0) 
+        #            == data_model.data_space.size)):
+        #    initial_mean = tf.squeeze(data_model.data_to_model(
+        #        tf.expand_dims(initial_mean, -1), False))
+        #if ((isinstance(initial_var, (np.ndarray, tf.Tensor))) 
+        #        and (tensor_array_shape(initial_var, 0) 
+        #            == data_model.data_space.size)):
+        #    initial_var = tf.squeeze(data_model.data_to_model(
+        #        tf.expand_dims(initial_var, -1)))
 
     # The size of the posterior (number of positions at which it is 
     # estimated) is determined by the data_space it refers to, and 
@@ -46,15 +46,15 @@ def get_posterior(idx, param, t, data_model, **kwargs):
     post_size = data_model.model_space.size
 
     if initial_mean is None:
-        initial_mean = tf.fill([post_size], param.post_dist.mean)
+        initial_mean = tf.fill([post_size], NP_DTYPE(param.post_dist.mean))
     else:
-        initial_mean = param.post_dist.transform.int_values(initial_mean)
+        initial_mean = param.post_dist.transform.int_values(NP_DTYPE(initial_mean))
 
     if initial_var is None:
-        initial_var = tf.fill([post_size], param.post_dist.var)
+        initial_var = tf.fill([post_size], NP_DTYPE(param.post_dist.var))
     else:
         # FIXME variance not value?
-        initial_var = param.post_dist.transform.int_values(initial_var)
+        initial_var = param.post_dist.transform.int_values(NP_DTYPE(initial_var))
 
     if (not is_global) and isinstance(param.post_dist, dist.Normal):
         return NormalPosterior(idx, initial_mean, initial_var, name=param.name, **kwargs)
