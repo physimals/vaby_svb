@@ -458,7 +458,7 @@ class Svb(InferenceMethod):
         # model_mean. This is distinct to producing a prediction for each samples. 
         self.model_mean = tf.identity(model_mean)
         self.model_var = tf.identity(model_var)
-        self.modelfit = self.fwd_model.evaluate(self.model_mean, tpts)
+        self.modelfit = self.fwd_model.evaluate(tf.expand_dims(self.model_mean, -1), tpts)
 
         return self.sample_predictions
 
