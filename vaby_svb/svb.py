@@ -288,6 +288,7 @@ class Svb(InferenceMethod):
         self.log.info(" - Epoch %04d - Outcome: %s" % (epoch, outcome))
         self.log.info("   - Mean: %s" % self.model_mean.numpy().mean(1))
         self.log.info("   - Variance: %s" % self.model_var.numpy().mean(1))
+        self.log.info("   - aks: %s" % [v.numpy().mean() for v in self.prior.vars])
         self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (self.epoch_cost, self.epoch_latent, self.epoch_reconst))
 
     def _create_input_tensors(self):

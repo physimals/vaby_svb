@@ -95,7 +95,7 @@ class Prior(LogBase):
     @property
     def size(self):
         return self.data_model.model_space.size
-        
+
     def build(self):
         """
         Define tensors that depend on any Variables in the prior
@@ -260,14 +260,15 @@ class MRFSpatialPrior(Prior):
 
         # Set up spatial smoothing parameter calculation from posterior and neighbour lists
         # We infer the log of ak.
-        ak_init = kwargs.get("ak", 1e-5)
+        self.num_nodes = data_model.model_space.size
+        self.num_aks = data_model.model_space.num_strucs
+        self.laplacian = data_model.model_space.laplacian
+        if self.num_aks > 1:
+            self.sub_strucs = data_model.model_space.parts
+        else:
+            self.sub_strucs = [data_model.model_space]
+        ak_init = tf.fill([self.num_aks], kwargs.get("ak", 1e-5))
         if kwargs.get("infer_ak", True):
-            #if self.data_model.is_hybrid: 
-            #    self.logak = [
-            #        tf.Variable(np.log(ak_init), name="log_ak_surf", dtype=TF_DTYPE),
-            #        tf.Variable(np.log(ak_init), name="log_ak_vol", dtype=TF_DTYPE),
-            #    ]
-            #else:
             self.logak = tf.Variable(np.log(ak_init), name="log_ak", dtype=TF_DTYPE)
             self.vars = [self.logak]
         else:
@@ -275,14 +276,14 @@ class MRFSpatialPrior(Prior):
             self.vars = []
 
     def build(self):
-        # Convert from log space to real number space 
-        #if self.data_model.is_hybrid: 
-        #    self.ak = [
-        #        tf.exp(self.logak[0]), 
-        #        tf.exp(self.logak[1])
-        #    ]
-        #else:
-        tf.exp(self.logak)
+        """
+        self.ak is a nodewise tensor containing the relevant ak for each node
+        (one per sub-structure)
+        """
+        aks_nodewise = []
+        for struc_idx, struc in enumerate(self.sub_strucs):
+            aks_nodewise.append(tf.fill([struc.size], tf.exp(self.logak[struc_idx])))
+        self.ak = tf.concat(aks_nodewise, 0)
 
     def mean_log_pdf(self, samples):
         r"""
@@ -303,34 +304,20 @@ class MRFSpatialPrior(Prior):
             return xDx 
 
         samples = tf.reshape(samples, (self.size, -1)) # [W,N]
-
-        #if self.data_model.is_hybrid: 
-        #    surf_samples = samples[self.data_model.surf_slicer]
-        #    vol_samples = samples[self.data_model.vol_slicer]
-        #
-        #    xDx_s = _calc_xDx(self.surf_laplacian, surf_samples)
-        #    xDx_v = _calc_xDx(self.vol_laplacian, vol_samples)
-        #
-        #    ak_xDx_s = tf.identity(0.5 * self.ak[0] * xDx_s, name="half_ak_xDx_s")
-        #    ak_xDx_v = tf.identity(0.5 * self.ak[1] * xDx_v, name="half_ak_xDx_v")
-        #
-        #    logP_s = tf.reduce_mean((0.5 * self.logak[0]) + ak_xDx_s)
-        #    logP_v = tf.reduce_mean((0.5 * self.logak[1]) + ak_xDx_v)
-        #
-        #    gamma_s = (((self.q1-1) * self.logak[0]) - self.ak[0] / self.q2)
-        #    gamma_v = (((self.q1-1) * self.logak[1]) - self.ak[1] / self.q2)
-        #
-        #    return logP_s + logP_v + gamma_s + gamma_v
-        #else: 
-        xDx = _calc_xDx(self.laplacian, samples)
-        log_ak = tf.identity(0.5 * self.logak, name="log_ak")
-        half_ak_xDx = tf.identity(0.5 * self.ak * xDx, name="half_ak_xDx")
-        logP = log_ak + half_ak_xDx
-        mean_logP = tf.reduce_mean(logP)
+        xDx = _calc_xDx(self.laplacian, samples) # [W, N]
+        half_log_ak = 0.5 * self.logak # [T]
+        half_ak_xDx = 0.5 * tf.expand_dims(self.ak, -1) * xDx # [W, N]
+        start_idx = 0
+        mean_log_p = 0
+        # FIXME use pre-set slices in model structure when have composite
+        for struc_idx, struc in enumerate(self.sub_strucs):
+            log_p = half_log_ak[struc_idx] + half_ak_xDx[start_idx:start_idx+struc.size]
+            mean_log_p += tf.reduce_mean(log_p)
+            start_idx += struc.size
 
         # Optional extra: cost from gamma prior on ak. 
-        mean_logP += (((self.q1-1) * self.logak) - self.ak / self.q2)
-        return mean_logP
+        mean_log_p += tf.reduce_sum(((self.q1-1) * self.logak) - tf.exp(self.logak) / self.q2)
+        return mean_log_p
 
     def __str__(self):
         return "MRF spatial prior"
