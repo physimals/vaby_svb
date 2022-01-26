@@ -386,13 +386,12 @@ class Svb(InferenceMethod):
         # for spatial regularization
         all_priors = []
         for idx, param in enumerate(self.params):            
-            all_priors.append(get_prior(param, self.data_model, idx=idx, post=self.post, **kwargs))
+            all_priors.append(get_prior(idx, param, self.data_model, **kwargs))
         self.prior = FactorisedPrior(all_priors, name="prior", **kwargs)
 
         # As for the noise posterior, the prior is defined seperately to the
         # model ones, and again in voxel data space  
-        self.noise_prior = get_prior(self.noise_param, self.data_model, 
-                                     idx=idx+1, post=self.noise_param.post_dist)
+        self.noise_prior = get_prior(idx+1, self.noise_param, self.data_model)
 
         # If all of our priors and posteriors are Gaussian we can use an analytic expression for
         # the latent cost - so set this flag to decide if this is possible
@@ -573,9 +572,9 @@ class Svb(InferenceMethod):
         return self.mean_cost
     
     def cost(self, data, tpts, sample_size):
-        self.prior.build()
+        self.prior.build(self.post)
         self.post.build()
-        self.noise_prior.build()
+        self.noise_prior.build(self.post)
         self.noise_post.build()
         return self._cost(data, tpts, sample_size)
 
