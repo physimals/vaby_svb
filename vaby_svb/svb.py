@@ -55,6 +55,7 @@ import time
 import numpy as np
 import tensorflow as tf
 
+from vaby import DataModel
 from vaby.utils import InferenceMethod, TF_DTYPE
 
 from .noise import NoiseParameter
@@ -286,9 +287,12 @@ class Svb(InferenceMethod):
 
     def _log_epoch(self, epoch, outcome=""):
         self.log.info(" - Epoch %04d - Outcome: %s" % (epoch, outcome))
-        self.log.info("   - Mean: %s" % self.model_mean.numpy().mean(1))
+        means_by_struc = self.data_model.model_space.split(self.model_mean, axis=1)
+        for name, means in means_by_struc.items():
+            self.log.info("   - %s mean: %s" % (name, means.numpy().mean(1)))
         self.log.info("   - Variance: %s" % self.model_var.numpy().mean(1))
-        self.log.info("   - aks: %s" % [v.numpy().mean() for v in self.prior.vars])
+        if self.prior.vars:
+            self.log.info("   - aks: %s" % [v.numpy().mean() for v in self.prior.vars])
         self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (self.epoch_cost, self.epoch_latent, self.epoch_reconst))
 
     def _create_input_tensors(self):
@@ -306,7 +310,7 @@ class Svb(InferenceMethod):
         """
         # Full data - we need this during training to correctly scale contributions
         # to the cost
-        self.data_full = tf.constant(self.data_model.data_space.srcdata.flat, dtype=TF_DTYPE, name="data_full")
+        self.data_full = tf.constant(self.data_model.data_space.srcdata.flat, dtype=TF_DTYPE)
 
         # Initial learning rate
         #self.initial_lr = tf.placeholder(TF_DTYPE, shape=[])
@@ -352,46 +356,42 @@ class Svb(InferenceMethod):
 
         # Create posterior distributions for model parameters
         # Note this can be initialized using the actual data
-        gaussian_posts, nongaussian_posts, all_posts = [], [], []
+        gaussian_posts, nongaussian_posts, model_posts = [], [], []
         for idx, param in enumerate(self.params):    
-            post = get_posterior(idx, param, self.tpts, 
-                self.data_model, init=self.data_model.post_init, 
-                **kwargs
-            )
+            post = get_posterior(idx, param, self.data_model, init=self.data_model.post_init, **kwargs)
             if post.is_gaussian:
                 gaussian_posts.append(post)
             else:
                 nongaussian_posts.append(post)
-            all_posts.append(post)
-
-        # The noise posterior is defined separate to model posteriors in 
-        # the voxel data space 
-        self.noise_post = get_posterior(idx+1, self.noise_param,
-                                        self.tpts, self.data_model, 
-                                        init=self.data_model.post_init, **kwargs)
+            model_posts.append(post)
 
         if self._infer_covar:
             self.log.info(" - Inferring covariances (correlation) between %i Gaussian parameters" % len(gaussian_posts))
             if nongaussian_posts:
                 self.log.info(" - Adding %i non-Gaussian parameters" % len(nongaussian_posts))
-                self.post = FactorisedPosterior([MVNPosterior(gaussian_posts, **kwargs)] + nongaussian_posts, name="post", **kwargs)
+                self.post = FactorisedPosterior(self.data_model, [MVNPosterior(gaussian_posts, **kwargs)] + nongaussian_posts, **kwargs)
             else:
-                self.post = MVNPosterior(gaussian_posts, name="post", init=self.data_model.post_init, **kwargs)
-
+                self.post = MVNPosterior(self.data_model, gaussian_posts, init=self.data_model.post_init, **kwargs)
         else:
             self.log.info(" - Not inferring covariances between parameters")
-            self.post = FactorisedPosterior(all_posts, name="post", **kwargs)
+            self.post = FactorisedPosterior(self.data_model, model_posts, **kwargs)
+
+        # The noise posterior is defined separate to model posteriors in 
+        # the voxel data space 
+        self.noise_post = get_posterior(idx+1, self.noise_param,
+                                        self.data_model, data_space=DataModel.DATA_SPACE,
+                                        init=self.data_model.post_init, **kwargs)
 
         # Create prior distribution - note this can make use of the posterior e.g.
         # for spatial regularization
         all_priors = []
         for idx, param in enumerate(self.params):            
             all_priors.append(get_prior(idx, param, self.data_model, **kwargs))
-        self.prior = FactorisedPrior(all_priors, name="prior", **kwargs)
+        self.prior = FactorisedPrior(all_priors, **kwargs)
 
         # As for the noise posterior, the prior is defined seperately to the
         # model ones, and again in voxel data space  
-        self.noise_prior = get_prior(idx+1, self.noise_param, self.data_model)
+        self.noise_prior = get_prior(idx+1, self.noise_param, self.data_model, data_space=DataModel.DATA_SPACE)
 
         # If all of our priors and posteriors are Gaussian we can use an analytic expression for
         # the latent cost - so set this flag to decide if this is possible
@@ -408,7 +408,7 @@ class Svb(InferenceMethod):
         for idx, param in enumerate(self.params):
             self.log.info(" - %s", param)
             self.log.info("   - Prior: %s %s", param.prior_dist, all_priors[idx])
-            self.log.info("   - Posterior: %s %s", param.post_dist, all_posts[idx])
+            self.log.info("   - Posterior: %s %s", param.post_dist, model_posts[idx])
 
         self.log.info(" - Noise")
         self.log.info("   - Prior: %s %s", self.noise_param.prior_dist, self.noise_prior)
@@ -453,8 +453,7 @@ class Svb(InferenceMethod):
         self.model_samples = model_samples
         self.sample_predictions = self.fwd_model.evaluate(model_samples, sample_tpts)
 
-        # Define convenience tensors for querying the model-space sample, means and prediction. 
-        # Modelfit_nodes has shape [W x B]. Produce a current "best estimate" prediction from 
+        # Produce a current "best estimate" prediction from 
         # model_mean. This is distinct to producing a prediction for each samples. 
         self.model_mean = tf.identity(model_mean)
         self.model_var = tf.identity(model_var)
@@ -523,7 +522,7 @@ class Svb(InferenceMethod):
         reconst_cost = self.noise_param.log_likelihood(data, 
                             model_prediction_voxels, noise_samples_ext, self.n_tpts)
         self.reconst_cost = reconst_cost
-        self.mean_reconst_cost = tf.reduce_mean(self.reconst_cost, name="mean_reconst_cost")
+        self.mean_reconst_cost = tf.reduce_mean(self.reconst_cost)
 
         # Part 2: Latent cost
         #
@@ -535,27 +534,25 @@ class Svb(InferenceMethod):
         # sampling.
         if self.analytic_latent_cost: 
             # FIXME: this will not be able to handle mixed voxel/node priors. 
-            latent_cost = tf.identity(self.post.latent_cost(self.prior), name="latent_cost")
+            latent_cost = self.post.latent_cost(self.prior)
         else:
 
             # Latent cost is calculated over model parameters and noise parameters separately 
             # Note that these may be sized differently (one over nodes, the other voxels)
             self.param_latent_cost = tf.subtract(
                                     self.post.entropy(param_samples_int), 
-                                    self.prior.mean_log_pdf(param_samples_int), 
-                                    name="param_latent_cost")
+                                    self.prior.mean_log_pdf(param_samples_int))
             self.noise_latent_cost = tf.subtract(
                                     self.noise_post.entropy(noise_samples_int), 
-                                    self.noise_prior.mean_log_pdf(noise_samples_int),
-                                    name="noise_latent_cost")
+                                    self.noise_prior.mean_log_pdf(noise_samples_int))
 
         # Reduce the latent costs over their voxel/node dimension to give an average.
         # This deals with the situation where they may be sized differently. The overall
         # latent cost is then the sum of the two averages 
         self.mean_latent_cost = tf.add(
             tf.reduce_mean(self.param_latent_cost), 
-            tf.reduce_mean(self.noise_latent_cost),
-            name="mean_latent_cost")
+            tf.reduce_mean(self.noise_latent_cost)
+        )
 
         # We have the possibility of modifying the weighting of the latent and
         # reconstruction costs. This can be used for debugging, also there is

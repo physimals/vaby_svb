@@ -5,17 +5,23 @@ VABY_SVB: Parameter priors
 import numpy as np
 import tensorflow as tf
 
-from vaby.utils import LogBase, TF_DTYPE, NP_DTYPE
+from vaby import DataModel
+from vaby.utils import LogBase, scipy_to_tf_sparse, TF_DTYPE, NP_DTYPE
 from vaby.dist import Normal
 
-def get_prior(idx, param, data_model, **kwargs):
+def get_prior(idx, param, data_model, data_space=DataModel.MODEL_SPACE, **kwargs):
     """
     Factory method to return a vertexwise prior
     """
     prior = None
     if isinstance(param.prior_dist, Normal):
+        if data_space == DataModel.MODEL_SPACE:
+            nnodes = data_model.model_space.size
+        else:
+            nnodes = data_model.data_space.size
+
         if param.prior_type == "N":
-            prior = NormalPrior(data_model, idx, param.prior_dist, **kwargs)
+            prior = NormalPrior(data_model, idx, param.prior_dist, nnodes=nnodes, **kwargs)
         elif param.prior_type == "M":
             prior = MRFSpatialPrior(data_model, idx, param.prior_dist, **kwargs)
         #elif param.prior_type == "M2":
@@ -40,7 +46,7 @@ class ParameterPrior(LogBase):
     :attr var: Variance [W] or [1]
     """
 
-    def __init__(self, data_model, idx):
+    def __init__(self, data_model, idx, nnodes=None, **kwargs):
         """
         Constructor
 
@@ -53,6 +59,10 @@ class ParameterPrior(LogBase):
         LogBase.__init__(self)
         self.data_model = data_model
         self.idx = idx
+        if nnodes:
+            self.nnodes = nnodes
+        else:
+            self.nnodes = self.data_model.model_space.size
 
     def build(self, post):
         """
@@ -65,10 +75,6 @@ class ParameterPrior(LogBase):
         :param post: Posterior object
         """
         pass
-        
-    @property
-    def size(self):
-        return self.data_model.model_space.size
 
     @property
     def is_gaussian(self):
@@ -97,12 +103,12 @@ class NormalPrior(ParameterPrior):
     def __init__(self, data_model, idx, prior_dist, **kwargs):
         """
         """
-        ParameterPrior.__init__(self, data_model, idx)
+        ParameterPrior.__init__(self, data_model, idx, **kwargs)
         self.scalar_mean = prior_dist.mean
         self.scalar_var = prior_dist.var
 
-        self.mean = tf.fill([self.size], NP_DTYPE(self.scalar_mean))
-        self.var = tf.fill([self.size], NP_DTYPE(self.scalar_var))
+        self.mean = tf.fill([self.nnodes], NP_DTYPE(self.scalar_mean))
+        self.var = tf.fill([self.nnodes], NP_DTYPE(self.scalar_var))
         self.vars = []
 
     def mean_log_pdf(self, samples):
@@ -114,13 +120,13 @@ class NormalPrior(ParameterPrior):
         such as factors of pi. However when this code is inherited by spatial priors and ARD
         the variance is no longer fixed and this term must be included.
         """
-        dx = tf.subtract(samples, tf.reshape(self.mean, [self.size, 1, 1])) # [W, 1, N]
+        dx = tf.subtract(samples, tf.reshape(self.mean, [self.nnodes, 1, 1])) # [W, 1, N]
         z = tf.math.divide(tf.square(dx), 
-                           tf.reshape(self.var, [self.size, 1, 1])) # [W, 1, N]
-        term1 = -0.5*tf.math.log(tf.reshape(self.var, [self.size, 1, 1]))
+                           tf.reshape(self.var, [self.nnodes, 1, 1])) # [W, 1, N]
+        term1 = -0.5*tf.math.log(tf.reshape(self.var, [self.nnodes, 1, 1]))
         term2 = -0.5*z
         log_pdf = term1 + term2 # [W, 1, N]
-        mean_log_pdf = tf.reshape(tf.reduce_mean(log_pdf, axis=-1), [self.size]) # [W]
+        mean_log_pdf = tf.reshape(tf.reduce_mean(log_pdf, axis=-1), [self.nnodes]) # [W]
         return mean_log_pdf
 
     def __str__(self):
@@ -142,14 +148,14 @@ class MRFSpatialPrior(ParameterPrior):
         self.log.debug("gamma q2", self.q2)
 
         # Laplacian matrix
-        self.laplacian = data_model.model_space.laplacian
+        self.laplacian = scipy_to_tf_sparse(data_model.model_space.laplacian)
 
         # Laplacian matrix with diagonal zeroed
         offdiag_mask = self.laplacian.indices[:, 0] != self.laplacian.indices[:, 1]
         self.laplacian_nodiag = tf.SparseTensor(
             indices=self.laplacian.indices[offdiag_mask],
             values=self.laplacian.values[offdiag_mask], 
-            dense_shape=[self.size, self.size]
+            dense_shape=[self.nnodes, self.nnodes]
         ) # [W, W] sparse
 
         # Diagonal of Laplacian matrix [W]
@@ -178,7 +184,7 @@ class MRFSpatialPrior(ParameterPrior):
         """
         aks_nodewise = []
         for struc_idx, struc in enumerate(self.sub_strucs):
-            aks_nodewise.append(tf.fill([struc.size], tf.exp(self.log_ak[struc_idx])))
+            aks_nodewise.append(tf.fill([struc.nnodes], tf.exp(self.log_ak[struc_idx])))
         self.ak = tf.concat(aks_nodewise, 0) # [W]
 
         # For the spatial mean we essentially need the (weighted) average of 
@@ -214,7 +220,7 @@ class MRFSpatialPrior(ParameterPrior):
             xDx = x * Dx # [W,N]
             return xDx 
 
-        samples = tf.reshape(samples, (self.size, -1)) # [W,N]
+        samples = tf.reshape(samples, (self.nnodes, -1)) # [W,N]
         xDx = _calc_xDx(self.laplacian, samples) # [W, N]
         half_log_ak = 0.5 * self.log_ak # [T]
         half_ak_xDx = 0.5 * tf.expand_dims(self.ak, -1) * xDx # [W, N]
@@ -236,11 +242,11 @@ class ARDPrior(NormalPrior):
         """
         NormalPrior.__init__(self, data_model, idx, prior_dist, **kwargs)
         self.fixed_var = prior_dist.var
-        self.mean = tf.fill((self.size,), NP_DTYPE(0))
+        self.mean = tf.fill((self.nnodes,), NP_DTYPE(0))
         
         # Set up inferred precision parameter phi - infer the log so always positive
         # FIXME should we use hardcoded default_phi or the supplied variance?
-        default_phi = np.full((self.size, ), np.log(1e-12))
+        default_phi = np.full((self.nnodes, ), np.log(1e-12))
         self.log_phi = tf.Variable(default_phi, dtype=TF_DTYPE)
         self.vars = [self.log_phi]
 
@@ -312,7 +318,7 @@ class FabberMRFSpatialPrior(NormalPrior):
 
         q1, q2 = 1.0, 10
         gk = 1 / (0.5 * trace_term + 0.5 * term2 + 1/q1)
-        hk = tf.multiply(tf.cast(self.size, TF_DTYPE), 0.5) + q2
+        hk = tf.multiply(tf.cast(self.nnodes, TF_DTYPE), 0.5) + q2
         self.ak = gk * hk
 
     def _setup_mean_var(self, post, nn):
@@ -342,8 +348,8 @@ class MRF2SpatialPrior(ParameterPrior):
 
     def __init__(self, data_model, mean, var, idx=None, post=None, nn=None, **kwargs):
         ParameterPrior.__init__(self, data_model)
-        self.mean = tf.fill([self.size], mean)
-        self.var = tf.fill([self.size], var)
+        self.mean = tf.fill([self.nnodes], mean)
+        self.var = tf.fill([self.nnodes], var)
         self.std = tf.sqrt(self.var)
 
         # We need the number of samples to implement the log PDF function
@@ -355,13 +361,13 @@ class MRF2SpatialPrior(ParameterPrior):
         self.vars = [self.log_ak]
 
     def mean_log_pdf(self, samples):
-        samples = tf.reshape(samples, (self.size, -1)) # [W, N]
+        samples = tf.reshape(samples, (self.nnodes, -1)) # [W, N]
         self.num_nn = tf.sparse.reduce_sum(self.nn, axis=1) # [W]
 
-        expanded_nn = tf.sparse.concat(2, [tf.sparse.reshape(self.nn, (self.size, self.size, 1))] * self.sample_size)
-        xj = expanded_nn * tf.reshape(samples, (self.size, 1, -1))
-        #xi = tf.reshape(tf.sparse.to_dense(tf.sparse.reorder(self.nn)), (self.size, self.size, 1)) * tf.reshape(samples, (1, self.size, -1))
-        xi = expanded_nn * tf.reshape(samples, (1, self.size, -1))
+        expanded_nn = tf.sparse.concat(2, [tf.sparse.reshape(self.nn, (self.nnodes, self.nnodes, 1))] * self.sample_size)
+        xj = expanded_nn * tf.reshape(samples, (self.nnodes, 1, -1))
+        #xi = tf.reshape(tf.sparse.to_dense(tf.sparse.reorder(self.nn)), (self.nnodes, self.nnodes, 1)) * tf.reshape(samples, (1, self.nnodes, -1))
+        xi = expanded_nn * tf.reshape(samples, (1, self.nnodes, -1))
         #xi = tf.sparse.transpose(xj, perm=(1, 0, 2)) 
         neg_xi = tf.SparseTensor(xi.indices, -xi.values, dense_shape=xi.dense_shape )
         dx2 = tf.square(tf.sparse.add(xj, neg_xi))
@@ -369,7 +375,7 @@ class MRF2SpatialPrior(ParameterPrior):
         term1 = tf.identity(0.5*self.log_ak)
         term2 = tf.identity(-self.ak * sdx / 4)
         log_pdf = term1 + term2  # [W, N]
-        mean_log_pdf = tf.reshape(tf.reduce_mean(log_pdf, axis=-1), [self.size]) # [W]
+        mean_log_pdf = tf.reshape(tf.reduce_mean(log_pdf, axis=-1), [self.nnodes]) # [W]
         return mean_log_pdf
 
     def __str__(self):
@@ -425,7 +431,7 @@ class ConstantMRFSpatialPrior(NormalPrior):
         term2 = np.sum(swk * self.wK) # [1]
 
         gk = 1 / (0.5 * trace_term + 0.5 * term2 + 0.1)
-        hk = float(self.size) * 0.5 + 1.0
+        hk = float(self.nnodes) * 0.5 + 1.0
         self.ak = gk * hk
         self.log.debug("MRF2: ak=%f", self.ak)
 

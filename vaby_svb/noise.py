@@ -13,15 +13,14 @@ class NoiseParameter(Parameter):
     noise is always assumed to be volumetric in origin (data_space="voxel"). 
     """
 
-    def __init__(self, data_space="voxel", **kwargs):
+    def __init__(self, **kwargs):
         Parameter.__init__(self, "noise",
                            prior=dist.LogNormal(1.0, 2e5),
                            post=dist.LogNormal(1.0, 1.02),
                            post_init=self._init_noise,
-                           data_space=data_space,
                            **kwargs)
 
-    def _init_noise(self, _param, _t, data):
+    def _init_noise(self, _param, data):
         _data_mean, data_var = tf.nn.moments(tf.constant(data), axes=1)
         return tf.where(tf.math.less(data_var, 1), tf.ones_like(data_var), data_var), None
 

@@ -1,75 +1,92 @@
 """
-VABY_AVB - Definition of the posterior distribution
+VABY_SVB - Posterior distribution
 """
+import numpy as np
 import tensorflow as tf
 
-import numpy as np
-
+from vaby import DataModel
 from vaby.utils import LogBase, NP_DTYPE, TF_DTYPE
 import vaby.dist as dist
 
-def tensor_array_shape(obj, dim):
-    if isinstance(obj, np.ndarray):
-        return obj.shape[dim]
-    else:
-        return obj.shape.as_list()[dim]
-
-def get_posterior(idx, param, t, data_model, **kwargs):
+def get_posterior(idx, param, data_model, data_space=DataModel.MODEL_SPACE, **kwargs):
     """
     Factory method to return a posterior
 
     :param param: svb.parameter.Parameter instance
-    :
     """
-    is_global = False # FIXME previously part of Parameter
     initial_mean, initial_var = None, None
     if param.post_init is not None:
-        initial_mean, initial_var = param.post_init(param, t, data_model.data_space.srcdata.flat)
+        initial_mean, initial_var = param.post_init(param, data_model.data_space.srcdata.flat)
 
-        if initial_mean is not None:
-            initial_mean = data_model.data_to_model(initial_mean)
-        if initial_var is not None:
-            initial_var = data_model.data_to_model(initial_var)
+        if data_space == DataModel.MODEL_SPACE:
+            if initial_mean is not None:
+                initial_mean = data_model.data_to_model(initial_mean)
+            if initial_var is not None:
+                initial_var = data_model.data_to_model(initial_var)
 
     # The size of the posterior (number of positions at which it is 
     # estimated) is determined by the data_space it refers to, and 
     # in turn by the data model. If it is global, the reduction will
-    # be applied when creating the GaussianGlobalPosterior later on 
-    post_size = data_model.model_space.size
+    # be applied when creating the GaussianGlobalPosterior later on
+    if data_space == DataModel.MODEL_SPACE:
+        nnodes = data_model.model_space.size
+    else:
+        nnodes = data_model.data_space.size
 
     if initial_mean is None:
-        initial_mean = tf.fill([post_size], NP_DTYPE(param.post_dist.mean))
+        initial_mean = tf.fill([nnodes], NP_DTYPE(param.post_dist.mean))
     else:
         initial_mean = param.post_dist.transform.int_values(NP_DTYPE(initial_mean))
 
     if initial_var is None:
-        initial_var = tf.fill([post_size], NP_DTYPE(param.post_dist.var))
+        initial_var = tf.fill([nnodes], NP_DTYPE(param.post_dist.var))
     else:
         # FIXME variance not value?
         initial_var = param.post_dist.transform.int_values(NP_DTYPE(initial_var))
 
-    if (not is_global) and isinstance(param.post_dist, dist.Normal):
-        return NormalPosterior(idx, initial_mean, initial_var, name=param.name, **kwargs)
+    if isinstance(param.post_dist, dist.Normal):
+        return NormalPosterior(idx, data_model, initial_mean, initial_var, nnodes=nnodes, **kwargs)
     
-    if is_global and isinstance(param.post_dist, dist.Normal):
-        return GaussianGlobalPosterior(idx, initial_mean, initial_var, name=param.name, **kwargs)
+    #if isinstance(param.post_dist, dist.Normal):
+    #    return GaussianGlobalPosterior(idx, initial_mean, initial_var, **kwargs)
 
-    raise ValueError("Can't create (global: %s) posterior for distribution: %s" 
-        % (is_global, param.post_dist))
+    raise ValueError("Can't create posterior for distribution: %s" % param.post_dist)
         
 class Posterior(LogBase):
     """
     Posterior distribution
+
+    Attributes:
+     - ``nvars`` Number of variates for a multivariate distribution
+     - ``nnodes`` Number of independent nodes at which the distribution is estimated
+     - ``variables`` Sequence of tf.Variable objects containing posterior state
+     - ``mean`` [W, nvars] Mean value(s) at each node
+     - ``var`` [W, nvars] Variance(s) at each node
+     - ``cov`` [W, nvars, nvars] Covariance matrix at each node
+
+    ``nvars`` (if > 1) and ``variables`` must be initialized in the constructor. Other
+    attributes must be initialized either in the constructor (if they are constant
+    tensors or tf.Variable) or in ``build`` (if they are dependent tensors). The
+    constructor should call ``build`` after initializing constant and tf.Variable
+    tensors.
     """
-    def __init__(self, idx, **kwargs):
+    def __init__(self, idx, data_model, nnodes=None, **kwargs):
         LogBase.__init__(self, **kwargs)
-        self._idx = idx
+        self.idx = idx
+        self.data_model = data_model
+        if nnodes:
+            self.nnodes = nnodes
+        else:
+            self.nnodes = data_model.model_space.size
+        self.nvars = 1
 
     def build(self):
         """
         Define tensors that depend on Variables in the posterior
         
-        Only constant tensors and Variables should be defined in the constructor.
+        Only constant tensors and tf.Variables should be defined in the constructor.
+        Any dependent variables must be created in this method to allow gradient 
+        recording
         """
         pass
 
@@ -132,7 +149,10 @@ class Posterior(LogBase):
         raise NotImplementedError()
 
     def log_det_cov(self):
-        raise NotImplementedError()
+        """
+        :return: Log of the determinant of the covariance matrix
+        """
+        return tf.log(tf.linalg.det(self.cov))
 
     @property
     def is_gaussian(self):
@@ -144,14 +164,12 @@ class NormalPosterior(Posterior):
     distribution
     """
 
-    def __init__(self, idx, mean, var, **kwargs):
+    def __init__(self, idx, data_model, mean, var, **kwargs):
         """
         :param mean: Tensor of shape [W] containing the initial mean at each parameter vertex
         :param var: Tensor of shape [W] containing the initial variance at each parameter vertex
         """
-        Posterior.__init__(self, idx, **kwargs)
-        self.nnodes = tf.shape(mean)[0]
-        self.name = kwargs.get("name", "NormPost")
+        Posterior.__init__(self, idx, data_model, **kwargs)
         self.suppress_nan = kwargs.get("suppress_nan", True)
 
         mean, var = self._get_mean_var(mean, var, kwargs.get("init", None))
@@ -183,7 +201,7 @@ class NormalPosterior(Posterior):
         return sample
 
     def entropy(self, _samples=None):
-        entropy = tf.identity(-0.5 * tf.math.log(self.var), name="%s_entropy" % self.name)
+        entropy = tf.identity(-0.5 * tf.math.log(self.var))
         return entropy
 
     def state(self):
@@ -209,8 +227,6 @@ class GaussianGlobalPosterior(Posterior):
         :param var: Tensor of shape [W] containing the variance at each parameter vertex
         """
         Posterior.__init__(self, idx, **kwargs)
-        self.nnodes = tf.shape(mean)[0]
-        self.name = kwargs.get("name", "GlobalPost")
         self.suppress_nan = kwargs.get("suppress_nan", True)
 
         mean, var = self._get_mean_var(mean, var, kwargs.get("init", None))
@@ -220,10 +236,8 @@ class GaussianGlobalPosterior(Posterior):
         self.initial_mean_global = tf.reshape(tf.reduce_mean(mean), [1])
         self.initial_var_global = tf.reshape(tf.reduce_mean(var), [1])
         self.mean_variable = tf.Variable(self.initial_mean_global, 
-                                         dtype=TF_DTYPE, validate_shape=False,
-                                         name="%s_mean" % self.name)
-        self.log_var = tf.Variable(tf.math.log(tf.cast(self.initial_var_global, TF_DTYPE)), validate_shape=False,
-                                   name="%s_log_var" % self.name)
+                                         dtype=TF_DTYPE, validate_shape=False)
+        self.log_var = tf.Variable(tf.math.log(tf.cast(self.initial_var_global, TF_DTYPE)), validate_shape=False)
         self.vars = [self.mean_variable, self.log_var]
 
     def build(self):
@@ -249,7 +263,7 @@ class GaussianGlobalPosterior(Posterior):
         return sample
 
     def entropy(self, _samples=None):
-        entropy = tf.identity(-0.5 * tf.math.log(self.var), name="%s_entropy" % self.name)
+        entropy = tf.identity(-0.5 * tf.math.log(self.var))
         return entropy
 
     def state(self):
@@ -269,17 +283,15 @@ class FactorisedPosterior(Posterior):
     Posterior distribution for a set of parameters with no covariance
     """
 
-    def __init__(self, posts, **kwargs):
-        Posterior.__init__(self, -1, **kwargs)
+    def __init__(self, data_model, posts, **kwargs):
+        Posterior.__init__(self, 0, data_model, **kwargs)
         self.posts = posts
-        self.nparams = len(self.posts)
-        self.name = kwargs.get("name", "FactPost")
-        self.nnodes = posts[0].nnodes
+        self.nvars = len(self.posts)
 
         # Regularisation to make sure cov is invertible. Note that we do not
         # need this for a diagonal covariance matrix but it is useful for
         # the full MVN covariance which shares some of the calculations
-        self.cov_reg = 1e-5*tf.eye(self.nparams)
+        self.cov_reg = 1e-5*tf.eye(self.nvars)
         self.vars = sum([p.vars for p in posts], [])
 
     def build(self):
@@ -288,12 +300,12 @@ class FactorisedPosterior(Posterior):
 
         means = [post.mean for post in self.posts]
         variances = [post.var for post in self.posts]
-        self.mean = tf.stack(means, axis=-1, name="%s_mean" % self.name)
-        self.var = tf.stack(variances, axis=-1, name="%s_var" % self.name)
-        self.std = tf.sqrt(self.var, name="%s_std" % self.name)
+        self.mean = tf.stack(means, axis=-1)
+        self.var = tf.stack(variances, axis=-1)
+        self.std = tf.sqrt(self.var)
 
         # Covariance matrix is diagonal
-        self.cov = tf.linalg.diag(self.var, name='%s_cov' % self.name)
+        self.cov = tf.linalg.diag(self.var)
 
     def sample(self, nsamples):
         samples = [post.sample(nsamples) for post in self.posts]
@@ -303,7 +315,7 @@ class FactorisedPosterior(Posterior):
     def entropy(self, _samples=None):
         entropy = tf.zeros([self.nnodes], dtype=TF_DTYPE)
         for post in self.posts:
-            entropy = tf.add(entropy, post.entropy(), name="%s_entropy" % self.name)
+            entropy = tf.add(entropy, post.entropy())
         return entropy
 
     def state(self):
@@ -322,7 +334,7 @@ class FactorisedPosterior(Posterior):
         """
         Determinant of diagonal matrix is product of diagonal entries
         """
-        return tf.reduce_sum(tf.math.log(self.var), axis=1, name='%s_log_det_cov' % self.name)
+        return tf.reduce_sum(tf.math.log(self.var), axis=1)
 
     def latent_loss(self, prior):
         """
@@ -343,15 +355,15 @@ class FactorisedPosterior(Posterior):
         term4 = prior.log_det_cov()
         term5 = self.log_det_cov()
 
-        return 0.5*(term1 + term3 - self.nparams + term4 - term5)
+        return 0.5*(term1 + term3 - self.nvars + term4 - term5)
 
 class MVNPosterior(FactorisedPosterior):
     """
     Multivariate Normal posterior distribution
     """
 
-    def __init__(self, posts, **kwargs):
-        FactorisedPosterior.__init__(self, posts, **kwargs)
+    def __init__(self, data_model, posts, **kwargs):
+        FactorisedPosterior.__init__(self, data_model, posts, **kwargs)
         self.suppress_nan = kwargs.get("suppress_nan", True)
 
         # The full covariance matrix is formed from the Cholesky decomposition
@@ -370,7 +382,7 @@ class MVNPosterior(FactorisedPosterior):
             _mean, cov = kwargs["init"]
             covar_init = tf.linalg.cholesky(cov)
         else:
-            covar_init = tf.zeros([self.nnodes, self.nparams, self.nparams], dtype=TF_DTYPE)
+            covar_init = tf.zeros([self.nnodes, self.nvars, self.nvars], dtype=TF_DTYPE)
 
         self.off_diag_vars_base = tf.Variable(covar_init, validate_shape=False)
         self.vars = sum([p.vars for p in posts], [])
@@ -384,16 +396,13 @@ class MVNPosterior(FactorisedPosterior):
         else:
             self.off_diag_vars = self.off_diag_vars_base
         self.off_diag_cov_chol = tf.linalg.set_diag(tf.linalg.band_part(self.off_diag_vars, -1, 0),
-                                                    tf.zeros([self.nnodes, self.nparams]),
-                                                    name='%s_off_diag_cov_chol' % self.name)
+                                                    tf.zeros([self.nnodes, self.nvars]))
 
         # Combine diagonal and off-diagonal elements into full matrix
-        self.cov_chol = tf.add(tf.linalg.diag(self.std), self.off_diag_cov_chol,
-                               name='%s_cov_chol' % self.name)
+        self.cov_chol = tf.add(tf.linalg.diag(self.std), self.off_diag_cov_chol)
 
         # Form the covariance matrix from the chol decomposition
-        self.cov = tf.matmul(tf.transpose(self.cov_chol, perm=(0, 2, 1)), self.cov_chol,
-                             name='%s_cov' % self.name)
+        self.cov = tf.matmul(tf.transpose(self.cov_chol, perm=(0, 2, 1)), self.cov_chol)
 
     def log_det_cov(self):
         """
@@ -404,17 +413,17 @@ class MVNPosterior(FactorisedPosterior):
 
     def sample(self, nsamples):
         # Use the 'reparameterization trick' to return the samples
-        eps = tf.random.normal((self.nnodes, self.nparams, nsamples), 0, 1, dtype=TF_DTYPE, name="eps")
+        eps = tf.random.normal((self.nnodes, self.nvars, nsamples), 0, 1, dtype=TF_DTYPE)
 
         # NB self.cov_chol is the Cholesky decomposition of the covariance matrix
         # so plays the role of the std.dev.
-        tiled_mean = tf.tile(tf.reshape(self.mean, [self.nnodes, self.nparams, 1]),
+        tiled_mean = tf.tile(tf.reshape(self.mean, [self.nnodes, self.nvars, 1]),
                              [1, 1, nsamples])
-        sample = tf.add(tiled_mean, tf.matmul(self.cov_chol, eps), name="%s_sample" % self.name)
+        sample = tf.add(tiled_mean, tf.matmul(self.cov_chol, eps))
         return sample
 
     def entropy(self, _samples=None):
-        entropy = tf.identity(-0.5 * self.log_det_cov(), name="%s_entropy" % self.name)
+        entropy = tf.identity(-0.5 * self.log_det_cov())
         return entropy
 
     def state(self):
