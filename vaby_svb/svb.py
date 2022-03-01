@@ -457,7 +457,7 @@ class Svb(InferenceMethod):
         # model_mean. This is distinct to producing a prediction for each samples. 
         self.model_mean = tf.identity(model_mean)
         self.model_var = tf.identity(model_var)
-        self.modelfit = self.fwd_model.evaluate(tf.expand_dims(self.model_mean, -1), tpts)
+        self.modelfit = self.fwd_model.evaluate(tf.expand_dims(self.model_mean, -1), tpts) # [W, T]
 
         return self.sample_predictions
 
@@ -504,7 +504,7 @@ class Svb(InferenceMethod):
         # as we need to scale this term correctly when the batch size is not
         # the full data size. 
         model_prediction = self._get_model_prediction(param_samples_int, tpts)
-        model_prediction_voxels = self.data_model.model_to_data(model_prediction)
+        model_prediction_voxels = self.data_model.model_to_data(model_prediction, pv_scale=True)
 
         # Convert the noise samples from from internal to external representation.
         # Save the current moments of the noise posterior. 
