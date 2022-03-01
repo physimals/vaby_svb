@@ -184,7 +184,7 @@ class MRFSpatialPrior(ParameterPrior):
         """
         aks_nodewise = []
         for struc_idx, struc in enumerate(self.sub_strucs):
-            aks_nodewise.append(tf.fill([struc.nnodes], tf.exp(self.log_ak[struc_idx])))
+            aks_nodewise.append(tf.fill([struc.size], tf.exp(self.log_ak[struc_idx])))
         self.ak = tf.concat(aks_nodewise, 0) # [W]
 
         # For the spatial mean we essentially need the (weighted) average of 
