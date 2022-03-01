@@ -293,6 +293,7 @@ class FactorisedPosterior(Posterior):
         # the full MVN covariance which shares some of the calculations
         self.cov_reg = 1e-5*tf.eye(self.nvars)
         self.vars = sum([p.vars for p in posts], [])
+        self.build()
 
     def build(self):
         for post in self.posts:
