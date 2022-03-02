@@ -195,7 +195,12 @@ class Svb(InferenceMethod):
                         batch_tpts = self.tpts[:, i::n_batches]
 
                     # Perform a training iteration using batch data
-                    all_vars = self.post.vars + self.prior.vars + self.noise_post.vars + self.noise_prior.vars
+                    all_vars = (
+                        self.post.vars +
+                        list(self.prior.vars.values()) + 
+                        self.noise_post.vars + 
+                        list(self.noise_prior.vars.values())
+                    )
                     with tf.GradientTape(persistent=False) as t:
                         ecost = self.cost(batch_data, batch_tpts, sample_size)
                     gradients = t.gradient(ecost, all_vars)
@@ -288,11 +293,12 @@ class Svb(InferenceMethod):
     def _log_epoch(self, epoch, outcome=""):
         self.log.info(" - Epoch %04d - Outcome: %s" % (epoch, outcome))
         means_by_struc = self.data_model.model_space.split(self.model_mean, axis=1)
-        for name, means in means_by_struc.items():
-            self.log.info("   - %s mean: %s" % (name, means.numpy().mean(1)))
-        self.log.info("   - Variance: %s" % self.model_var.numpy().mean(1))
-        if self.prior.vars:
-            self.log.info("   - aks: %s" % [v.numpy().mean() for v in self.prior.vars])
+        vars_by_struc = self.data_model.model_space.split(self.model_var, axis=1)
+        for name, mean in means_by_struc.items():
+            var = vars_by_struc[name]
+            self.log.info("   - %s mean: %s variance: %s" % (name, mean.numpy().mean(1), var.numpy().mean(1)))
+        for name, var in self.prior.vars.items():
+            self.log.info(f"   - {name}: %s" % var.numpy())
         self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (self.epoch_cost, self.epoch_latent, self.epoch_reconst))
 
     def _create_input_tensors(self):

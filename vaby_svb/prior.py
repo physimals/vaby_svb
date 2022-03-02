@@ -109,7 +109,7 @@ class NormalPrior(ParameterPrior):
 
         self.mean = tf.fill([self.nnodes], NP_DTYPE(self.scalar_mean))
         self.var = tf.fill([self.nnodes], NP_DTYPE(self.scalar_var))
-        self.vars = []
+        self.vars = {}
 
     def mean_log_pdf(self, samples):
         """
@@ -169,10 +169,10 @@ class MRFSpatialPrior(ParameterPrior):
         ak_init = tf.fill([self.num_aks], NP_DTYPE(kwargs.get("ak", 1e-5)))
         if kwargs.get("infer_ak", True):
             self.log_ak = tf.Variable(np.log(ak_init), dtype=TF_DTYPE)
-            self.vars = [self.log_ak]
+            self.vars = {"log_ak" : self.log_ak}
         else:
             self.log_ak = tf.constant(np.log(ak_init), dtype=TF_DTYPE)
-            self.vars = []
+            self.vars = {}
 
     def __str__(self):
         return "MRF spatial prior"
@@ -248,7 +248,7 @@ class ARDPrior(NormalPrior):
         # FIXME should we use hardcoded default_phi or the supplied variance?
         default_phi = np.full((self.nnodes, ), np.log(1e-12))
         self.log_phi = tf.Variable(default_phi, dtype=TF_DTYPE)
-        self.vars = [self.log_phi]
+        self.vars = {"log_phi" : self.log_phi}
 
     def __str__(self):
         return "ARD prior"
@@ -358,7 +358,7 @@ class MRF2SpatialPrior(ParameterPrior):
         # Set up spatial smoothing parameter calculation from posterior and neighbour lists
         self.log_ak = tf.Variable(-5.0, dtype=TF_DTYPE)
         self.ak = tf.exp(self.log_ak)
-        self.vars = [self.log_ak]
+        self.vars = {"log_ak" : self.log_ak}
 
     def mean_log_pdf(self, samples):
         samples = tf.reshape(samples, (self.nnodes, -1)) # [W, N]
@@ -401,7 +401,7 @@ class ConstantMRFSpatialPrior(NormalPrior):
         # will be calculated from these and also the spatial variation in neighbour nodes
         self.fixed_mean = self.mean
         self.fixed_var = self.var
-        self.vars = []
+        self.vars = {}
 
     def __str__(self):
         return "Spatial MRF prior (%f, %f) - const" % (self.scalar_mean, self.scalar_var)
@@ -459,7 +459,10 @@ class FactorisedPrior(LogBase):
         LogBase.__init__(self)
         self.priors = priors
         self.nparams = len(priors)
-        self.vars = sum([p.vars for p in priors], [])
+        self.vars = {}
+        for p in self.priors:
+            for name, var in p.vars.items():
+                self.vars[f"{name}_{p.idx}"] = var
 
     def build(self, post):
         for prior in self.priors:
