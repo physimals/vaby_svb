@@ -95,30 +95,14 @@ class Svb(InferenceMethod):
         """
         self.log.info("Starting SVB inference")
 
-        # Optional parameters that are only used occasionally
-        display_step = kwargs.get("display_step", 10)
-        lr_decay_rate = kwargs.get("lr_decay_rate", 1.0)
-        ss_increase_factor = kwargs.get("ss_increase_factor", 1.0)
-        self.revert_post_trials = kwargs.get("revert_post_trials", 50)
-        revert_post_final = kwargs.get("revert_post_final", True)
-        record_history = kwargs.get("record_history", False)
-        self.history = {}
-
-        # All the parameters to infer - model parameters. 
-        # Noise is defined as a separate parameter in "voxel" space 
-        # (never "node" - surface - as may be the case for the model) 
-        self.noise_param = NoiseParameter()
-        self._infer_covar = kwargs.get("infer_covar", False)
-        self.mean_1, self.covar_1 = None, None
-
-        # Create prior and posterior 
-        self._create_prior_post(**kwargs)
-
         # Determine number of batches and sample size
         batch_size = kwargs.get("batch_size", self.n_tpts)
         n_batches = int(np.ceil(float(self.n_tpts) / batch_size))
         sample_size = kwargs.get("sample_size", 5)
         
+        # Create prior and posterior 
+        self._create_prior_post(**kwargs)
+
         # Optional variable weighting of latent and reconstruction costs
         self.latent_weight = kwargs.get("latent_weight", 1.0)
         self.reconst_weight = kwargs.get("reconst_weight", 1.0)
@@ -126,9 +110,18 @@ class Svb(InferenceMethod):
         if fit_only_epochs > 0:
             self.latent_weight = 0.0
 
-        # If required, create arrays to store cost and parameter histories
+        # Optional parameters that are only used occasionally
+        display_step = kwargs.get("display_step", 10)
+        #lr_decay_rate = kwargs.get("lr_decay_rate", 1.0)
+        #ss_increase_factor = kwargs.get("ss_increase_factor", 1.0)
+        #self.revert_post_trials = kwargs.get("revert_post_trials", 50)
+        #revert_post_final = kwargs.get("revert_post_final", True)
+        record_history = kwargs.get("record_history", False)
+
+        # Create structures to store current state and history
+        current_state = {}
         if record_history:
-            self.history = {
+            history = {
                 "mean_cost" : np.zeros([epochs+1]),
                 "reconst_cost" : np.zeros([self.n_voxels, epochs+1]),
                 "latent_cost" : np.zeros([self.n_nodes, epochs+1]),
@@ -138,43 +131,43 @@ class Svb(InferenceMethod):
                 "runtime" : np.zeros([epochs+1]),
             }
 
-        # Each epoch passes through the whole data but it may do this in 'batches' so there may be
-        # multiple training iterations per epoch, one for each batch
+        # Log inference setup
         self.log.info(" - Number of training epochs: %i", epochs)
         self.log.info(" - %i voxels of %i time points (processed in %i batches of target size %i)" , self.n_voxels, self.n_tpts, n_batches, batch_size)
         self.log.info(" - Initial learning rate: %.5f", learning_rate)
-        if lr_decay_rate < 1.0:
-            self.log.info(" - Learning rate decay: %.3f", lr_decay_rate)
+        #if lr_decay_rate < 1.0:
+        #    self.log.info(" - Learning rate decay: %.3f", lr_decay_rate)
         self.log.info(" - Initial sample size: %i", sample_size)
-        if ss_increase_factor > 1.0:
-            self.log.info(" - Sample size increase factor: %.3f", ss_increase_factor)
-        if self.revert_post_trials > 0:
-            self.log.info(" - Posterior reversion after %i trials", self.revert_post_trials)
+        #if ss_increase_factor > 1.0:
+        #    self.log.info(" - Sample size increase factor: %.3f", ss_increase_factor)
+        #if self.revert_post_trials > 0:
+        #    self.log.info(" - Posterior reversion after %i trials", self.revert_post_trials)
 
         # Log initial state
         self.cost(self.data, self.tpts, sample_size)
-        self.epoch_latent = self.mean_latent_cost.numpy()
-        self.epoch_reconst = self.mean_reconst_cost.numpy()
-        self.epoch_cost = self.mean_cost.numpy().mean()
-        self._log_epoch(0)
+        current_state["latent"] += self.mean_latent_cost.numpy() / n_batches
+        current_state["reconst"] += self.mean_reconst_cost.numpy() / n_batches
+        current_state["cost"] += self.mean_cost.numpy() / n_batches
+        self._update_current_state(current_state)
+        self._log_epoch(0, current_state)
 
         # Main training loop
         #
         # Potential for a bug here: don't use range(1, epochs+1) as it 
         # interacts badly with training the ak parameter. 
         self.start_time = time.time()
-        self.trials, self.best_cost, self.best_state = 0, self.epoch_cost, None
+        #self.trials, self.best_cost, self.best_state = 0, self.epoch_cost, None
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         for epoch in range(epochs):
             try:
                 self.epoch_err = False
-                self.epoch_latent, self.epoch_reconst, self.epoch_cost = 0, 0, 0
+                current_state.update({"latent" : 0, "reconst" : 0, "cost" : 0})
 
-                if fit_only_epochs and epoch == fit_only_epochs:
-                    # Once we have completed fit_only_epochs of training we will allow the latent cost to have
-                    # an impact and reset the best cost accordingly.
-                    self.latent_weight = 1.0
-                    self.trials, self.best_cost = 0, 1e12
+                #if fit_only_epochs and epoch == fit_only_epochs:
+                #    # Once we have completed fit_only_epochs of training we will allow the latent cost to have
+                #    # an impact and reset the best cost accordingly.
+                #    self.latent_weight = 1.0
+                #    self.trials, self.best_cost = 0, 1e12
 
                 # Iterate over training batches - note that there may be only one
                 for i in range(n_batches):
@@ -207,22 +200,24 @@ class Svb(InferenceMethod):
 
                     # Apply the gradients
                     optimizer.apply_gradients(zip(gradients, all_vars))
-
-                    self.epoch_latent += self.mean_latent_cost.numpy() / n_batches
-                    self.epoch_reconst += self.mean_reconst_cost.numpy() / n_batches
-                    self.epoch_cost += self.mean_cost.numpy() / n_batches
+                    print("batch means: ", self.post.mean.numpy().mean(0))
+                    current_state["latent"] += self.mean_latent_cost.numpy() / n_batches
+                    current_state["reconst"] += self.mean_reconst_cost.numpy() / n_batches
+                    current_state["cost"] += self.mean_cost.numpy() / n_batches
 
             except tf.errors.OpError:
                 self.log.exception("Numerical error fitting batch")
                 self.epoch_err = True
 
             # End of epoch
-            if record_history:
-                self._record_history(epoch)
-            outcome = self._check_improvement()
+            self._update_current_state(current_state)
+
+            #if record_history:
+            #    self._record_history(epoch, current_state, history)
+            #outcome = self._check_improvement()
 
             if (epoch+1) % display_step == 0:
-                self._log_epoch(epoch+1, outcome)
+                self._log_epoch(epoch+1, current_state)
 
         self.log.info(" - End of inference. ")
         if revert_post_final and self.best_state is not None:
@@ -232,10 +227,38 @@ class Svb(InferenceMethod):
             self.log.info(" - Reverting to best batch-averaged cost")
             #self.set_state(best_state)
 
+        # Produce a current "best estimate" prediction from 
+        # model_mean. This is distinct to producing a prediction for each samples
+        # and includes all time points
+        self.modelfit = self.fwd_model.evaluate(tf.expand_dims(self.model_mean, -1), self.tpts) # [W, T]
+
         # Record final history as it might have reverted and hence be different    
         if record_history:
             self._record_history(epoch)
+
+        # Extract the final full-timepoints model fit
         self.finalize()
+
+    def _update_current_state(self, current_state):
+        # Extract mean and variance for each parameter in 
+        # external form
+        model_mean, model_var = [], []
+        for idx, param in enumerate(self.params):
+            int_means = self.post.mean[:, idx]
+            int_vars = self.post.var[:, idx]
+            ext_means, ext_vars = param.post_dist.transform.ext_moments(int_means, int_vars)
+            model_mean.append(ext_means)
+            model_var.append(ext_vars)
+        self.model_mean = tf.identity(model_mean)
+        self.model_var = tf.identity(model_var)
+        self.noise_mean, self.noise_var = self.noise_param.post_dist.transform.ext_moments(self.noise_post.mean, self.noise_post.var)
+   
+        current_state.update({
+            "model_mean" : self.model_mean.numpy(),
+            "model_var" : self.model_var.numpy(),
+            "noise_mean" : self.noise_mean.numpy(),
+            "noise_var" : self.noise_var.numpy(),
+        })
 
     def _record_history(self, epoch):
         # Extract model and noise parameter estimates
@@ -252,7 +275,7 @@ class Svb(InferenceMethod):
         # Store parameter estimates:
         self.history["model_mean_mean"][epoch, :] = model_mean.mean(0)
         self.history["model_mean"][:, epoch, :] = model_mean
-        self.history["noise_mean"][:, epoch] = noise_mean
+        self.history["noise_var"][:, epoch] = noisevar
         #sak, vak = self._extract_ak()
         #if sak.size: history["ak"]["surf"][epoch,:] = sak 
         #if vak.size: history["ak"]["vol"][epoch,:] = vak
@@ -290,16 +313,17 @@ class Svb(InferenceMethod):
         
         return outcome
 
-    def _log_epoch(self, epoch, outcome=""):
+    def _log_epoch(self, epoch, current_state, outcome=""):
         self.log.info(" - Epoch %04d - Outcome: %s" % (epoch, outcome))
-        means_by_struc = self.data_model.model_space.split(self.model_mean, axis=1)
-        vars_by_struc = self.data_model.model_space.split(self.model_var, axis=1)
+        means_by_struc = self.data_model.model_space.split(current_state["model_mean"], axis=1)
+        vars_by_struc = self.data_model.model_space.split(current_state["model_var"], axis=1)
         for name, mean in means_by_struc.items():
             var = vars_by_struc[name]
             self.log.info("   - %s mean: %s variance: %s" % (name, mean.numpy().mean(1), var.numpy().mean(1)))
         for name, var in self.prior.vars.items():
             self.log.info(f"   - {name}: %s" % var.numpy())
-        self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (self.epoch_cost, self.epoch_latent, self.epoch_reconst))
+        self.log.info("   - Noise mean: %.4g variance: %.4g" % (current_state["noise_mean"].mean(), current_state["noise_var"].mean()))
+        self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (current_state["cost"], current_state["latent"], current_state["reconst"]))
 
     def _create_input_tensors(self):
         """
@@ -360,6 +384,8 @@ class Svb(InferenceMethod):
         """
         self.log.info("Setting up prior and posterior")
 
+        # All the parameters to infer - model parameters. 
+
         # Create posterior distributions for model parameters
         # Note this can be initialized using the actual data
         gaussian_posts, nongaussian_posts, model_posts = [], [], []
@@ -371,7 +397,7 @@ class Svb(InferenceMethod):
                 nongaussian_posts.append(post)
             model_posts.append(post)
 
-        if self._infer_covar:
+        if kwargs.get("infer_covar", False):
             self.log.info(" - Inferring covariances (correlation) between %i Gaussian parameters" % len(gaussian_posts))
             if nongaussian_posts:
                 self.log.info(" - Adding %i non-Gaussian parameters" % len(nongaussian_posts))
@@ -382,8 +408,9 @@ class Svb(InferenceMethod):
             self.log.info(" - Not inferring covariances between parameters")
             self.post = FactorisedPosterior(self.data_model, model_posts, **kwargs)
 
-        # The noise posterior is defined separate to model posteriors in 
-        # the voxel data space 
+        # The noise parameter is defined separate to model parameters in 
+        # the acquisition data space 
+        self.noise_param = NoiseParameter()
         self.noise_post = get_posterior(idx+1, self.noise_param,
                                         self.data_model, data_space=DataModel.DATA_SPACE,
                                         init=self.data_model.post_init, **kwargs)
@@ -420,6 +447,7 @@ class Svb(InferenceMethod):
         self.log.info("   - Prior: %s %s", self.noise_param.prior_dist, self.noise_prior)
         self.log.info("   - Posterior: %s %s", self.noise_param.post_dist, self.noise_post)
 
+    @tf.function
     def _get_model_prediction(self, param_samples, tpts):
         """
         Get a model prediction for the data batch being processed for each
@@ -432,23 +460,15 @@ class Svb(InferenceMethod):
         :return Tensor [V x S x B]. B is the batch size, so for each voxel and sample
                 we return a prediction which can be compared with the data batch
         """
-        model_samples, model_mean, model_var = [], [], []
+        # Transform the underlying Gaussian samples into the values required by the model
+        #
+        # The sample parameter values tensor also needs to be reshaped to [P x W x S x 1] so
+        # the time values from the data batch will be broadcasted and a full prediction
+        # returned for every sample
+        model_samples = []
         for idx, param in zip(range(param_samples.shape[1]), self.params):
             int_samples = param_samples[:, idx, :]
-            int_means = self.post.mean[:, idx]
-            int_vars = self.post.var[:, idx]
-            
-            # Transform the underlying Gaussian samples into the values required by the model
-            # denoted by the prefix int_ -> ext_, determined by each parameter's 
-            # underlying distribution. 
-            #
-            # The sample parameter values tensor also needs to be reshaped to [P x W x S x 1] so
-            # the time values from the data batch will be broadcasted and a full prediction
-            # returned for every sample
             model_samples.append(tf.expand_dims(param.post_dist.transform.ext_values(int_samples), -1))
-            ext_means, ext_vars = param.post_dist.transform.ext_moments(int_means, int_vars)
-            model_mean.append(ext_means)
-            model_var.append(ext_vars)
 
         # The timepoints tensor has shape [V x B] or [1 x B]. It needs to be reshaped
         # to [V x 1 x B] or [1 x 1 x B] so it can be broadcast across each of the S samples
@@ -456,16 +476,7 @@ class Svb(InferenceMethod):
         
         # Produce a model prediction for each set of transformed parameter samples passed in 
         # Model prediction has shape [W x S x B]
-        self.model_samples = model_samples
-        self.sample_predictions = self.fwd_model.evaluate(model_samples, sample_tpts)
-
-        # Produce a current "best estimate" prediction from 
-        # model_mean. This is distinct to producing a prediction for each samples. 
-        self.model_mean = tf.identity(model_mean)
-        self.model_var = tf.identity(model_var)
-        self.modelfit = self.fwd_model.evaluate(tf.expand_dims(self.model_mean, -1), tpts) # [W, T]
-
-        return self.sample_predictions
+        return self.fwd_model.evaluate(model_samples, sample_tpts)
 
     def _cost(self, data, tpts, sample_size):
         """
@@ -516,10 +527,6 @@ class Svb(InferenceMethod):
         # Save the current moments of the noise posterior. 
         transformer = self.noise_param.post_dist.transform
         noise_samples_ext = tf.squeeze(transformer.ext_values(noise_samples_int))
-        noise_mean_ext, noise_var_ext = transformer.ext_moments(
-                                            self.noise_post.mean, self.noise_post.var)
-        self.noise_mean = noise_mean_ext
-        self.noise_var = noise_var_ext
 
         # Reconstruction cost calculated here: the log-likelihood of the difference between 
         # the data and the model predictions. Calculation of the log-likelihood requires 
@@ -527,8 +534,7 @@ class Svb(InferenceMethod):
         # samples. Finally, we average this over voxels. 
         reconst_cost = self.noise_param.log_likelihood(data, 
                             model_prediction_voxels, noise_samples_ext, self.n_tpts)
-        self.reconst_cost = reconst_cost
-        self.mean_reconst_cost = tf.reduce_mean(self.reconst_cost)
+        self.mean_reconst_cost = tf.reduce_mean(reconst_cost)
 
         # Part 2: Latent cost
         #
@@ -545,10 +551,10 @@ class Svb(InferenceMethod):
 
             # Latent cost is calculated over model parameters and noise parameters separately 
             # Note that these may be sized differently (one over nodes, the other voxels)
-            self.param_latent_cost = tf.subtract(
+            param_latent_cost = tf.subtract(
                                     self.post.entropy(param_samples_int), 
                                     self.prior.mean_log_pdf(param_samples_int))
-            self.noise_latent_cost = tf.subtract(
+            noise_latent_cost = tf.subtract(
                                     self.noise_post.entropy(noise_samples_int), 
                                     self.noise_prior.mean_log_pdf(noise_samples_int))
 
@@ -556,8 +562,8 @@ class Svb(InferenceMethod):
         # This deals with the situation where they may be sized differently. The overall
         # latent cost is then the sum of the two averages 
         self.mean_latent_cost = tf.add(
-            tf.reduce_mean(self.param_latent_cost), 
-            tf.reduce_mean(self.noise_latent_cost)
+            tf.reduce_mean(param_latent_cost), 
+            tf.reduce_mean(noise_latent_cost)
         )
 
         # We have the possibility of modifying the weighting of the latent and
@@ -574,11 +580,12 @@ class Svb(InferenceMethod):
 
         return self.mean_cost
     
-    def cost(self, data, tpts, sample_size):
-        self.prior.build(self.post)
-        self.post.build()
-        self.noise_prior.build(self.post)
-        self.noise_post.build()
+    def cost(self, data, tpts, sample_size, build=True):
+        if build:
+            self.prior.build(self.post)
+            self.post.build()
+            self.noise_prior.build(self.post)
+            self.noise_post.build()
         return self._cost(data, tpts, sample_size)
 
     def state(self):
