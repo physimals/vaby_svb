@@ -18,12 +18,6 @@ def get_posterior(idx, param, data_model, data_space=DataModel.MODEL_SPACE, **kw
     if param.post_init is not None:
         initial_mean, initial_var = param.post_init(param, data_model.data_space.srcdata.flat)
 
-        if data_space == DataModel.MODEL_SPACE:
-            if initial_mean is not None:
-                initial_mean = data_model.data_to_model(initial_mean)
-            if initial_var is not None:
-                initial_var = data_model.data_to_model(initial_var)
-
     # The size of the posterior (number of positions at which it is 
     # estimated) is determined by the data_space it refers to, and 
     # in turn by the data model. If it is global, the reduction will
