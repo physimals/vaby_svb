@@ -145,9 +145,9 @@ class Svb(InferenceMethod):
 
         # Log initial state
         self.cost(self.data, self.tpts, sample_size)
-        current_state["latent"] += self.mean_latent_cost.numpy() / n_batches
-        current_state["reconst"] += self.mean_reconst_cost.numpy() / n_batches
-        current_state["cost"] += self.mean_cost.numpy() / n_batches
+        current_state["latent"] = self.mean_latent_cost.numpy()
+        current_state["reconst"] = self.mean_reconst_cost.numpy()
+        current_state["cost"] = self.mean_cost.numpy()
         self._update_current_state(current_state)
         self._log_epoch(0, current_state)
 
@@ -200,7 +200,6 @@ class Svb(InferenceMethod):
 
                     # Apply the gradients
                     optimizer.apply_gradients(zip(gradients, all_vars))
-                    print("batch means: ", self.post.mean.numpy().mean(0))
                     current_state["latent"] += self.mean_latent_cost.numpy() / n_batches
                     current_state["reconst"] += self.mean_reconst_cost.numpy() / n_batches
                     current_state["cost"] += self.mean_cost.numpy() / n_batches
@@ -220,12 +219,12 @@ class Svb(InferenceMethod):
                 self._log_epoch(epoch+1, current_state)
 
         self.log.info(" - End of inference. ")
-        if revert_post_final and self.best_state is not None:
-            # At the end of training we revert to the state with best mean cost and write a final history step
-            # with these values. Note that the cost may not be as reported earlier as this was based on a
-            # mean over the training batches whereas here we recalculate the cost for the whole data set.
-            self.log.info(" - Reverting to best batch-averaged cost")
-            #self.set_state(best_state)
+        #if revert_post_final and self.best_state is not None:
+        #    # At the end of training we revert to the state with best mean cost and write a final history step
+        #    # with these values. Note that the cost may not be as reported earlier as this was based on a
+        #    # mean over the training batches whereas here we recalculate the cost for the whole data set.
+        #    self.log.info(" - Reverting to best batch-averaged cost")
+        #    #self.set_state(best_state)
 
         # Produce a current "best estimate" prediction from 
         # model_mean. This is distinct to producing a prediction for each samples
@@ -319,9 +318,9 @@ class Svb(InferenceMethod):
         vars_by_struc = self.data_model.model_space.split(current_state["model_var"], axis=1)
         for name, mean in means_by_struc.items():
             var = vars_by_struc[name]
-            self.log.info("   - %s mean: %s variance: %s" % (name, mean.numpy().mean(1), var.numpy().mean(1)))
+            self.log.info("   - %s mean: %s variance: %s" % (name, mean.mean(1), var.mean(1)))
         for name, var in self.prior.vars.items():
-            self.log.info(f"   - {name}: %s" % var.numpy())
+            self.log.info(f"   - {name}: %s" % var)
         self.log.info("   - Noise mean: %.4g variance: %.4g" % (current_state["noise_mean"].mean(), current_state["noise_var"].mean()))
         self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (current_state["cost"], current_state["latent"], current_state["reconst"]))
 
