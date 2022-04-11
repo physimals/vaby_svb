@@ -274,7 +274,7 @@ class Svb(InferenceMethod):
         # Store parameter estimates:
         self.history["model_mean_mean"][epoch, :] = model_mean.mean(0)
         self.history["model_mean"][:, epoch, :] = model_mean
-        self.history["noise_var"][:, epoch] = noisevar
+        self.history["noise_var"][:, epoch] = noise_mean
         #sak, vak = self._extract_ak()
         #if sak.size: history["ak"]["surf"][epoch,:] = sak 
         #if vak.size: history["ak"]["vol"][epoch,:] = vak
@@ -318,10 +318,10 @@ class Svb(InferenceMethod):
         vars_by_struc = self.data_model.model_space.split(current_state["model_var"], axis=1)
         for name, mean in means_by_struc.items():
             var = vars_by_struc[name]
-            self.log.info("   - %s mean: %s variance: %s" % (name, mean.mean(1), var.mean(1)))
+            self.log.info("   - %s mean: %s variance: %s" % (name, self.log_avg(mean, axis=1), self.log_avg(var, axis=1)))
         for name, var in self.prior.vars.items():
             self.log.info(f"   - {name}: %s" % var)
-        self.log.info("   - Noise mean: %.4g variance: %.4g" % (current_state["noise_mean"].mean(), current_state["noise_var"].mean()))
+        self.log.info("   - Noise mean: %.4g variance: %.4g" % (self.log_avg(current_state["noise_mean"]), self.log_avg(current_state["noise_var"])))
         self.log.info("   - Cost: %.4g (latent %.4g, reconst %.4g)" % (current_state["cost"], current_state["latent"], current_state["reconst"]))
 
     def _create_input_tensors(self):
