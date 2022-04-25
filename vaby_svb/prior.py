@@ -182,10 +182,11 @@ class MRFSpatialPrior(ParameterPrior):
         self.ak is a nodewise tensor containing the relevant ak for each node
         (one per sub-structure)
         """
-        aks_nodewise = []
+        log_aks_nodewise = []
         for struc_idx, struc in enumerate(self.sub_strucs):
-            aks_nodewise.append(tf.fill([struc.size], tf.exp(self.log_ak[struc_idx])))
-        self.ak = tf.concat(aks_nodewise, 0) # [W]
+            log_aks_nodewise.append(tf.fill([struc.size], self.log_ak[struc_idx]))
+        self.log_ak_nodewise = tf.concat(log_aks_nodewise, 0) # [W]
+        self.ak_nodewise = tf.exp(self.log_ak_nodewise)
 
         # For the spatial mean we essentially need the (weighted) average of 
         # nearest neighbour mean values. This does not involve the current posterior
@@ -196,7 +197,7 @@ class MRFSpatialPrior(ParameterPrior):
         spatial_mean = tf.sparse.sparse_dense_matmul(self.laplacian_nodiag, node_mean) # [W]
         spatial_mean = tf.squeeze(spatial_mean, 1)
         spatial_mean = spatial_mean / node_nn_total_weight # [W]
-        spatial_prec = node_nn_total_weight * self.ak # [W]
+        spatial_prec = node_nn_total_weight * self.ak_nodewise # [W]
 
         #self.var = 1 / (1/init_variance + spatial_prec)
         self.var = 1 / spatial_prec # [W]
@@ -222,14 +223,11 @@ class MRFSpatialPrior(ParameterPrior):
 
         samples = tf.reshape(samples, (self.nnodes, -1)) # [W,N]
         xDx = _calc_xDx(self.laplacian, samples) # [W, N]
-        half_log_ak = 0.5 * self.log_ak # [T]
-        half_ak_xDx = 0.5 * tf.expand_dims(self.ak, -1) * xDx # [W, N]
-        mean_log_p = 0
-        for struc_idx, struc in enumerate(self.sub_strucs):
-            log_p = half_log_ak[struc_idx] + half_ak_xDx[self.slices[struc_idx]]
-            mean_log_p += tf.reduce_mean(log_p)
+        half_ak_xDx = 0.5 * tf.expand_dims(self.ak_nodewise, -1) * xDx # [W, N]
+        half_log_ak = 0.5 * self.log_ak_nodewise # [W]
+        mean_log_p = half_log_ak + tf.reduce_mean(half_ak_xDx, axis=-1) # [W]
 
-        # Optional extra: cost from gamma prior on ak. 
+        # Optional extra: cost from gamma prior on ak
         mean_log_p += tf.reduce_sum(((self.q1-1) * self.log_ak) - tf.exp(self.log_ak) / self.q2)
         return mean_log_p
 
