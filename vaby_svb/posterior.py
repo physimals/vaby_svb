@@ -28,15 +28,15 @@ def get_posterior(idx, param, data_model, data_space=DataModel.MODEL_SPACE, **kw
         nnodes = data_model.data_space.size
 
     if initial_mean is None:
-        initial_mean = tf.fill([nnodes], NP_DTYPE(param.post_dist.mean))
+        initial_mean = np.full([nnodes], NP_DTYPE(param.post_dist.mean))
     else:
-        initial_mean = param.post_dist.transform.int_values(NP_DTYPE(initial_mean))
+        initial_mean = param.post_dist.transform.int_values(NP_DTYPE(initial_mean), ns=np)
 
     if initial_var is None:
-        initial_var = tf.fill([nnodes], NP_DTYPE(param.post_dist.var))
+        initial_var = np.full([nnodes], NP_DTYPE(param.post_dist.var))
     else:
         # FIXME variance not value?
-        initial_var = param.post_dist.transform.int_values(NP_DTYPE(initial_var))
+        initial_var = param.post_dist.transform.int_values(NP_DTYPE(initial_var), ns=np)
 
     if isinstance(param.post_dist, dist.Normal):
         return NormalPosterior(idx, data_model, initial_mean, initial_var, nnodes=nnodes, **kwargs)
@@ -73,6 +73,7 @@ class Posterior(LogBase):
         else:
             self.nnodes = data_model.model_space.size
         self.nvars = 1
+        self.rand = tf.random.Generator.from_seed(1)
 
     def build(self):
         """
@@ -167,29 +168,31 @@ class NormalPosterior(Posterior):
         self.suppress_nan = kwargs.get("suppress_nan", True)
 
         mean, var = self._get_mean_var(mean, var, kwargs.get("init", None))
-        mean = tf.cast(mean, TF_DTYPE)
-        var = tf.cast(var, TF_DTYPE)
-        self.mean_init = tf.where(tf.math.is_finite(mean), mean, tf.zeros_like(mean))
-        self.var_init = tf.where(tf.math.is_nan(var), tf.ones_like(var), var)
+        mean = mean.astype(NP_DTYPE)
+        var = var.astype(NP_DTYPE)
+        mean[~np.isfinite(mean)] = 0.0
+        var[~np.isfinite(mean)] = 1.0
+        self.mean_init = mean
+        self.var_init = var
 
         self.mean_variable = tf.Variable(mean, validate_shape=False)
         self.log_var = tf.Variable(tf.math.log(var), validate_shape=False)
         self.vars = [self.mean_variable, self.log_var]
 
     def build(self):
-        self.var_variable = tf.exp(self.log_var)
+        var_variable = tf.exp(self.log_var)
         if self.suppress_nan:
             #self.mean = tf.where(tf.math.is_nan(self.mean_variable), tf.ones_like(self.mean_variable), self.mean_variable)
             #self.var = tf.where(tf.math.is_nan(self.var_variable), tf.ones_like(self.var_variable), self.var_variable)
             self.mean = tf.where(tf.math.is_nan(self.mean_variable), self.mean_init, self.mean_variable)
-            self.var = tf.where(tf.math.is_nan(self.var_variable), self.var_init, self.var_variable)
+            self.var = tf.where(tf.math.is_nan(var_variable), self.var_init, var_variable)
         else:
             self.mean = self.mean_variable
-            self.var = self.var_variable
+            self.var = var_variable
         self.std = tf.sqrt(self.var)
 
     def sample(self, nsamples):
-        eps = tf.random.normal((self.nnodes, 1, nsamples), 0, 1, dtype=TF_DTYPE)
+        eps = self.rand.normal((self.nnodes, 1, nsamples), 0, 1, dtype=TF_DTYPE)
         tiled_mean = tf.tile(tf.reshape(self.mean, [self.nnodes, 1, 1]), [1, 1, nsamples])
         sample = tf.add(tiled_mean, tf.multiply(tf.reshape(self.std, [self.nnodes, 1, 1]), eps))
         return sample
@@ -197,80 +200,9 @@ class NormalPosterior(Posterior):
     def entropy(self, _samples=None):
         entropy = tf.identity(-0.5 * tf.math.log(self.var))
         return entropy
-
-    def state(self):
-        return [self.mean, self.log_var]
-
-    def set_state(self, state):
-        return [
-            self.mean_variable.assign(state[0]),
-            self.log_var.assign(state[1])
-        ]
 
     def __str__(self):
         return f"posterior"
-
-class GaussianGlobalPosterior(Posterior):
-    """
-    Posterior which has the same value at every parameter vertex
-    """
-
-    def __init__(self, idx, mean, var, **kwargs):
-        """
-        :param mean: Tensor of shape [W] containing the mean at each parameter vertex
-        :param var: Tensor of shape [W] containing the variance at each parameter vertex
-        """
-        Posterior.__init__(self, idx, **kwargs)
-        self.suppress_nan = kwargs.get("suppress_nan", True)
-
-        mean, var = self._get_mean_var(mean, var, kwargs.get("init", None))
-        
-        # Take the mean of the mean and variance across nodes as the initial value
-        # in case there is a vertexwise initialization function
-        self.initial_mean_global = tf.reshape(tf.reduce_mean(mean), [1])
-        self.initial_var_global = tf.reshape(tf.reduce_mean(var), [1])
-        self.mean_variable = tf.Variable(self.initial_mean_global, 
-                                         dtype=TF_DTYPE, validate_shape=False)
-        self.log_var = tf.Variable(tf.math.log(tf.cast(self.initial_var_global, TF_DTYPE)), validate_shape=False)
-        self.vars = [self.mean_variable, self.log_var]
-
-    def build(self):
-        self.var_variable = tf.exp(self.log_var)
-        if self.suppress_nan:
-            self.mean_global = tf.where(tf.math.is_nan(self.mean_variable), self.initial_mean_global, self.mean_variable)
-            self.var_global = tf.where(tf.math.is_nan(self.var_variable), self.initial_var_global, self.var_variable)
-        else:
-            self.mean_global = self.mean_variable
-            self.var_global = self.var_variable
-
-        self.mean = tf.tile(self.mean_global, [self.nnodes])
-        self.var = tf.tile(self.var_global, [self.nnodes])
-        self.std = tf.sqrt(self.var)
-
-    def sample(self, nsamples):
-        """
-        FIXME should each parameter vertex get the same sample? Currently YES
-        """
-        eps = tf.random.normal((1, 1, nsamples), 0, 1, dtype=TF_DTYPE)
-        tiled_mean = tf.tile(tf.reshape(self.mean, [self.nnodes, 1, 1]), [1, 1, nsamples])
-        sample = tf.add(tiled_mean, tf.multiply(tf.reshape(self.std, [self.nnodes, 1, 1]), eps))
-        return sample
-
-    def entropy(self, _samples=None):
-        entropy = tf.identity(-0.5 * tf.math.log(self.var))
-        return entropy
-
-    def state(self):
-        return [self.mean_global, self.log_var]
-
-    def set_state(self, state):
-        return [
-            self.mean_variable.assign(state[0]),
-            self.log_var.assign(state[1])
-        ]
-
-    def __str__(self):
-        return "Global posterior"
 
 class FactorisedPosterior(Posterior):
     """
@@ -285,45 +217,36 @@ class FactorisedPosterior(Posterior):
         # Regularisation to make sure cov is invertible. Note that we do not
         # need this for a diagonal covariance matrix but it is useful for
         # the full MVN covariance which shares some of the calculations
-        self.cov_reg = 1e-5*tf.eye(self.nvars)
+        self.cov_reg = 1e-5*np.eye(self.nvars, dtype=NP_DTYPE)
         self.vars = sum([p.vars for p in posts], [])
-        self.build()
 
     def build(self):
-        for post in self.posts:
+        mean = tf.TensorArray(TF_DTYPE, size=self.nvars)
+        var = tf.TensorArray(TF_DTYPE, size=self.nvars)
+        for idx, post in enumerate(self.posts):
             post.build()
-
-        means = [post.mean for post in self.posts]
-        variances = [post.var for post in self.posts]
-        self.mean = tf.stack(means, axis=-1)
-        self.var = tf.stack(variances, axis=-1)
+            mean = mean.write(idx, post.mean)
+            var = var.write(idx, post.var)
+        
+        self.mean = tf.transpose(mean.stack(), [1, 0])
+        self.var = tf.transpose(var.stack(), [1, 0])
         self.std = tf.sqrt(self.var)
 
         # Covariance matrix is diagonal
         self.cov = tf.linalg.diag(self.var)
 
     def sample(self, nsamples):
-        samples = [post.sample(nsamples) for post in self.posts]
-        sample = tf.concat(samples, 1)
-        return sample
+        sample = tf.TensorArray(TF_DTYPE, size=self.nvars)
+        for idx, post in enumerate(self.posts):
+            s = tf.transpose(post.sample(nsamples), (1, 0, 2))
+            sample = sample.write(idx, s)
+        return tf.transpose(sample.concat(), (1, 0, 2))
 
     def entropy(self, _samples=None):
         entropy = tf.zeros([self.nnodes], dtype=TF_DTYPE)
         for post in self.posts:
             entropy = tf.add(entropy, post.entropy())
         return entropy
-
-    def state(self):
-        state = []
-        for post in self.posts:
-            state.extend(post.state())
-        return state
-
-    def set_state(self, state):
-        ops = []
-        for idx, post in enumerate(self.posts):
-            ops += post.set_state(state[idx*2:idx*2+2])
-        return ops
 
     def log_det_cov(self):
         """
@@ -375,29 +298,30 @@ class MVNPosterior(FactorisedPosterior):
             # of the covariance to initialize the off-diagonal terms
             self.log.info(" - Initializing posterior covariance from input posterior")
             _mean, cov = kwargs["init"]
-            covar_init = tf.linalg.cholesky(cov)
+            self.covar_init = np.linalg.cholesky(cov)
         else:
-            covar_init = tf.zeros([self.nnodes, self.nvars, self.nvars], dtype=TF_DTYPE)
+            self.covar_init = np.zeros([self.nnodes, self.nvars, self.nvars], dtype=NP_DTYPE)
 
-        self.off_diag_vars_base = tf.Variable(covar_init, validate_shape=False)
+        self.off_diag_vars_base = tf.Variable(self.covar_init, validate_shape=False)
         self.vars = sum([p.vars for p in posts], [])
         self.vars.append(self.off_diag_vars_base)
-
-    def build(self):
-        FactorisedPosterior.build(self)
 
         if self.suppress_nan:
             self.off_diag_vars = tf.where(tf.math.is_nan(self.off_diag_vars_base), tf.zeros_like(self.off_diag_vars_base), self.off_diag_vars_base)
         else:
             self.off_diag_vars = self.off_diag_vars_base
+
         self.off_diag_cov_chol = tf.linalg.set_diag(tf.linalg.band_part(self.off_diag_vars, -1, 0),
                                                     tf.zeros([self.nnodes, self.nvars]))
 
+    def build(self):
+        FactorisedPosterior.build(self)
+
         # Combine diagonal and off-diagonal elements into full matrix
-        self.cov_chol = tf.add(tf.linalg.diag(self.std), self.off_diag_cov_chol)
+        cov_chol = tf.add(tf.linalg.diag(tf.sqrt(self.var)), self.off_diag_cov_chol)
 
         # Form the covariance matrix from the chol decomposition
-        self.cov = tf.matmul(tf.transpose(self.cov_chol, perm=(0, 2, 1)), self.cov_chol)
+        self.cov = tf.matmul(tf.transpose(self.cov_chol, perm=(0, 2, 1)), cov_chol)
 
     def log_det_cov(self):
         """
@@ -408,7 +332,7 @@ class MVNPosterior(FactorisedPosterior):
 
     def sample(self, nsamples):
         # Use the 'reparameterization trick' to return the samples
-        eps = tf.random.normal((self.nnodes, self.nvars, nsamples), 0, 1, dtype=TF_DTYPE)
+        eps = self.rand.normal((self.nnodes, self.nvars, nsamples), 0, 1, dtype=TF_DTYPE)
 
         # NB self.cov_chol is the Cholesky decomposition of the covariance matrix
         # so plays the role of the std.dev.
@@ -420,11 +344,3 @@ class MVNPosterior(FactorisedPosterior):
     def entropy(self, _samples=None):
         entropy = tf.identity(-0.5 * self.log_det_cov())
         return entropy
-
-    def state(self):
-        return list(FactorisedPosterior.state(self)) + [self.off_diag_vars]
-
-    def set_state(self, state):
-        ops = list(FactorisedPosterior.set_state(self, state[:-1]))
-        ops += [self.off_diag_vars_base.assign(state[-1], validate_shape=False)]
-        return ops
