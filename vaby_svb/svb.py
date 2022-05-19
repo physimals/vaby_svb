@@ -55,8 +55,7 @@ import time
 import numpy as np
 import tensorflow as tf
 
-from vaby import DataModel
-from vaby.utils import InferenceMethod, TF_DTYPE
+from vaby import DataModel, InferenceMethod, TF_DTYPE
 
 from .noise import NoiseParameter
 from .prior import FactorisedPrior, get_prior
@@ -314,7 +313,7 @@ class Svb(InferenceMethod):
         # Note this can be initialized using the actual data
         gaussian_posts, nongaussian_posts, model_posts = [], [], []
         for idx, param in enumerate(self.params):    
-            post = get_posterior(idx, param, self.data_model, init=self.data_model.post_init, **kwargs)
+            post = get_posterior(idx, param, self.data_model, **kwargs)
             if post.is_gaussian:
                 gaussian_posts.append(post)
             else:
@@ -327,7 +326,7 @@ class Svb(InferenceMethod):
                 self.log.info(" - Adding %i non-Gaussian parameters" % len(nongaussian_posts))
                 self.post = FactorisedPosterior(self.data_model, [MVNPosterior(gaussian_posts, **kwargs)] + nongaussian_posts, **kwargs)
             else:
-                self.post = MVNPosterior(self.data_model, gaussian_posts, init=self.data_model.post_init, **kwargs)
+                self.post = MVNPosterior(self.data_model, gaussian_posts, **kwargs)
         else:
             self.log.info(" - Not inferring covariances between parameters")
             self.post = FactorisedPosterior(self.data_model, model_posts, **kwargs)
@@ -335,9 +334,7 @@ class Svb(InferenceMethod):
         # The noise parameter is defined separate to model parameters in 
         # the acquisition data space 
         self.noise_param = NoiseParameter()
-        self.noise_post = get_posterior(idx+1, self.noise_param,
-                                        self.data_model, data_space=DataModel.DATA_SPACE,
-                                        init=self.data_model.post_init, **kwargs)
+        self.noise_post = get_posterior(idx+1, self.noise_param, self.data_model, data_space=DataModel.DATA_SPACE, **kwargs)
 
         # Create prior distribution - note this can make use of the posterior e.g.
         # for spatial regularization
