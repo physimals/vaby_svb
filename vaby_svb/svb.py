@@ -467,6 +467,7 @@ class Svb(InferenceMethod):
         if self.analytic_latent_cost: 
             # FIXME: this will not be able to handle mixed voxel/node priors. 
             latent_cost = self.post.latent_cost(self.prior)
+            mean_latent = tf.reduce_mean(latent_cost)
         else:
 
             # Latent cost is calculated over model parameters and noise parameters separately 
@@ -478,13 +479,9 @@ class Svb(InferenceMethod):
                                     self.noise_post.entropy(noise_samples_int), 
                                     self.noise_prior.mean_log_pdf(noise_samples_int))
 
-        # Reduce the latent costs over their voxel/node dimension to give an average.
-        # This deals with the situation where they may be sized differently. The overall
-        # latent cost is then the sum of the two averages 
-        mean_latent = tf.add(
-            tf.reduce_mean(param_latent_cost), 
-            tf.reduce_mean(noise_latent_cost)
-        )
+            # Concatenate the noise/param latent costs and take mean. This deals with the
+            # case where they are sized differently
+            mean_latent = tf.reduce_mean(tf.concat([param_latent_cost, noise_latent_cost], axis=0))
 
         # We have the possibility of modifying the weighting of the latent and
         # reconstruction costs. This can be used for debugging, also there is
