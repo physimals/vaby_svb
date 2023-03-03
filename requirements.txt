@@ -2,4 +2,5 @@ numpy>=1.15.0
 nibabel
 six
 tensorflow
+vaby>=0.2
 
